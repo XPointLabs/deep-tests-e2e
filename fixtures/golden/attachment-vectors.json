@@ -1,0 +1,16 @@
+﻿{
+  "schemaVersion": 1,
+  "kind": "attachment-vectors",
+  "vectors": [
+    {
+      "id": "attachment/plaintext-small-v1",
+      "source": "session-file-server/doc/api.yaml#/paths/~1file/post",
+      "filename": "deep-attachment.txt",
+      "contentType": "text/plain",
+      "contentBase64Url": "RGVlcFNlc3Npb24gYXR0YWNobWVudCBmaXh0dXJlIHYxCg",
+      "size": 34,
+      "sha256": "922d04a535eb35642943d848def02f2bd20d4dee807fd7f1e57c5acdee29ac8f"
+    }
+  ]
+}
+

@@ -1,0 +1,66 @@
+﻿{
+  "schemaVersion": 1,
+  "kind": "registration-payload-fixtures",
+  "accounts": {
+    "alice": {
+      "displayName": "Alice Deep",
+      "sessionId": "05d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72",
+      "recoveryPhrase": "ruby bakery illness push rift reef nabbing bawled hope zork silk lobster hope"
+    },
+    "bob": {
+      "displayName": "Bob Deep",
+      "sessionId": "05aa654f00fc39fc69fd0db829410ca38177d7732a8d2f0934ab3872ac56d5aa74",
+      "recoveryPhrase": "edge museum onward cottage exit lemon helmet vivid maple county island valve edge"
+    }
+  },
+  "nodeRegistration": {
+    "nodeId": "deep-node-0001",
+    "operatorAddress": "0x1111111111111111111111111111111111111111",
+    "rewardsAddress": "0x2222222222222222222222222222222222222222",
+    "blsPublicKey": {
+      "x": "0x01",
+      "y": "0x02"
+    },
+    "ed25519PublicKey": "ed25519-devnet-public-key",
+    "ed25519Signature1": "ed25519-devnet-sig-1",
+    "ed25519Signature2": "ed25519-devnet-sig-2",
+    "operatorFeeBps": 1250,
+    "stakeAtomic": 25000000000000,
+    "contributors": [
+      {
+        "address": "0x1111111111111111111111111111111111111111",
+        "beneficiary": "0x2222222222222222222222222222222222222222",
+        "amountAtomic": 25000000000000
+      }
+    ],
+    "transport": {
+      "protocol": "vless",
+      "host": "xnode",
+      "port": 443,
+      "uuid": "00000000-0000-4000-8000-000000000001",
+      "flow": "",
+      "security": "reality",
+      "sni": "www.microsoft.com",
+      "publicKey": "devnet-reality-public-key",
+      "shortId": "0123456789abcdef",
+      "fingerprint": "chrome",
+      "path": "/",
+      "alpn": ["h2", "http/1.1"]
+    }
+  },
+  "pushSubscription": {
+    "pubkey": "05d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72",
+    "session_ed25519": "d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72",
+    "subkey_tag": "0000000000000000000000000000000000000000000000000000000000000000",
+    "namespaces": [-400, 0, 1, 2, 17],
+    "data": true,
+    "sig_ts": 1780000000,
+    "signature": "f8efdd12000700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "service": "firebase",
+    "service_info": {
+      "token": "deep-devnet-device-token"
+    },
+    "enc_key": "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+  }
+}
+

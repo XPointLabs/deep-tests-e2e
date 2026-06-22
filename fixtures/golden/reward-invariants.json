@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "kind": "reward-invariants",
+  "token": {
+    "name": "XPoint",
+    "symbol": "XPNT",
+    "decimals": 9
+  },
+  "stakingRequirementAtomic": 25000000000000,
+  "wallet": "0x1111111111111111111111111111111111111111",
+  "node": {
+    "nodeId": "42",
+    "operatorAddress": "0x1111111111111111111111111111111111111111",
+    "beneficiary": "0x2222222222222222222222222222222222222222",
+    "operatorFeeBps": 1500,
+    "stakeAtomic": 25000000000000,
+    "expectedStatus": "active"
+  },
+  "events": [
+    {
+      "chainId": 31337,
+      "blockNumber": 11,
+      "transactionHash": "0xdeep-new-node",
+      "logIndex": 0,
+      "address": "0x0000000000000000000000000000000000001001",
+      "name": "NewServiceNodeV2",
+      "args": {
+        "serviceNodeID": "42",
+        "initiator": "0x9999999999999999999999999999999999999999",
+        "pubkey": {
+          "X": "0x01",
+          "Y": "0x02"
+        },
+        "serviceNode": {
+          "serviceNodePubkey": "12345",
+          "serviceNodeSignature1": "67890",
+          "serviceNodeSignature2": "13579",
+          "fee": 1500
+        },
+        "contributors": [
+          {
+            "staker": {
+              "addr": "0x1111111111111111111111111111111111111111",
+              "beneficiary": "0x2222222222222222222222222222222222222222"
+            },
+            "stakedAmount": 25000000000000
+          }
+        ]
+      }
+    },
+    {
+      "chainId": 31337,
+      "blockNumber": 12,
+      "transactionHash": "0xdeep-reward-balance",
+      "logIndex": 0,
+      "address": "0x0000000000000000000000000000000000001001",
+      "name": "RewardsBalanceUpdated",
+      "args": {
+        "recipientAddress": "0x1111111111111111111111111111111111111111",
+        "amount": 50000,
+        "previousBalance": 0
+      }
+    },
+    {
+      "chainId": 31337,
+      "blockNumber": 13,
+      "transactionHash": "0xdeep-reward-claimed",
+      "logIndex": 0,
+      "address": "0x0000000000000000000000000000000000001001",
+      "name": "RewardsClaimed",
+      "args": {
+        "recipientAddress": "0x1111111111111111111111111111111111111111",
+        "amount": 15000
+      }
+    }
+  ],
+  "expectedRewards": {
+    "lifetimeRewardsAtomic": 50000,
+    "claimedRewardsAtomic": 15000,
+    "claimableRewardsAtomic": 35000
+  }
+}
+

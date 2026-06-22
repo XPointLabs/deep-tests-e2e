@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-05-29",
+  "sources": [
+    {
+      "repository": "session-foundation/session-playwright",
+      "branch": "main",
+      "commit": "c0cd783",
+      "usedFor": ["new-account", "send-message", "attachment", "group-messaging", "network-page"]
+    },
+    {
+      "repository": "session-foundation/session-appium",
+      "branch": "main",
+      "commit": "0c56e81",
+      "usedFor": ["new-account", "push-registration", "attachment", "group-messaging"]
+    },
+    {
+      "repository": "session-foundation/session-docker-ci",
+      "branch": "main",
+      "commit": "af5b821",
+      "usedFor": ["ci-image-conventions"]
+    },
+    {
+      "repository": "session-foundation/session-deps",
+      "branch": "dev",
+      "commit": "9dfce3d",
+      "usedFor": ["native-dependency-policy"]
+    },
+    {
+      "repository": "session-foundation/session-router",
+      "branch": "dev",
+      "commit": "8d1df2efe",
+      "usedFor": ["router-test-semantics"]
+    },
+    {
+      "repository": "session-foundation/session-storage-server",
+      "branch": "dev",
+      "commit": "77a2687",
+      "usedFor": ["storage-store-retrieve-contract"]
+    },
+    {
+      "repository": "session-foundation/session-file-server",
+      "branch": "dev",
+      "commit": "4553471",
+      "usedFor": ["file-upload-download-contract"]
+    },
+    {
+      "repository": "session-foundation/session-push-notification-server",
+      "branch": "dev",
+      "commit": "e2a0479",
+      "usedFor": ["push-subscribe-contract"]
+    },
+    {
+      "repository": "session-foundation/session-token-contracts",
+      "branch": "master",
+      "commit": "9291f0a",
+      "usedFor": ["reward-invariants", "node-registration-events"]
+    },
+    {
+      "repository": "session-foundation/libsession-util",
+      "branch": "dev",
+      "commit": "3033fbc",
+      "usedFor": ["message-padding", "session-id", "attachment-encryption-tests"]
+    }
+  ],
+  "relevantTests": [
+    "session-router/test",
+    "session-storage-server/network-tests",
+    "session-file-server/tests",
+    "session-token-contracts/test/*",
+    "libsession-util/tests"
+  ]
+}
+

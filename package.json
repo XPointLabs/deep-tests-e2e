@@ -1,0 +1,22 @@
+﻿{
+  "name": "deep-tests-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deep golden compatibility fixtures and end-to-end smoke tests.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "runtime:checks": "node scripts/runtime-checks.mjs",
+    "fixtures:validate": "node scripts/validate-fixtures.mjs",
+    "compat": "node --test --test-reporter=spec test/compat/*.test.mjs",
+    "test": "npm run compat",
+    "e2e:smoke": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.smoke.test.mjs",
+    "e2e:load": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.load.test.mjs",
+    "e2e:full": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.smoke.test.mjs test/e2e/*.full.test.mjs test/e2e/*.load.test.mjs",
+    "ci:smoke": "npm run runtime:checks && npm run fixtures:validate && npm run compat && npm run e2e:smoke",
+    "ci:full": "npm run runtime:checks && npm run fixtures:validate && npm run compat && npm run e2e:full"
+  }
+}
+

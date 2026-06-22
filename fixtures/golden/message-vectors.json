@@ -1,0 +1,35 @@
+﻿{
+  "schemaVersion": 1,
+  "kind": "message-vectors",
+  "vectors": [
+    {
+      "id": "offline-message/simple-v1",
+      "source": "session-storage-server/network-tests/test_store_retrieve.py",
+      "sender": "alice",
+      "recipientSessionId": "05d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72",
+      "namespace": 0,
+      "timestampMs": 1780000000000,
+      "ttlMs": 86400000,
+      "bodyUtf8": "Deep offline hello at 2026-05-29T00:00:00Z",
+      "bodyBase64Url": "RGVlcCBvZmZsaW5lIGhlbGxvIGF0IDIwMjYtMDUtMjlUMDA6MDA6MDBa",
+      "sha256": "6d1709509cf680c3e9355a9aee0d95ea50fe9e2e405bdb72b4b8fc45655ccc60"
+    },
+    {
+      "id": "group-message/simple-v1",
+      "source": "session-playwright/tests/automation/group_testing.spec.ts",
+      "sender": "alice",
+      "groupId": "deep-group-0001",
+      "namespace": -100,
+      "timestampMs": 1780000001000,
+      "ttlMs": 86400000,
+      "bodyJson": {
+        "groupId": "deep-group-0001",
+        "body": "group hello",
+        "members": ["alice", "bob", "carol"]
+      },
+      "bodyBase64Url": "eyJncm91cElkIjoiZGVlcC1ncm91cC0wMDAxIiwiYm9keSI6Imdyb3VwIGhlbGxvIiwibWVtYmVycyI6WyJhbGljZSIsImJvYiIsImNhcm9sIl19",
+      "sha256": "215989d8d3d8de7b0f1a11961709e0730e95dfd4e35ae377cc4a33342c6ed066"
+    }
+  ]
+}
+
