@@ -86,6 +86,7 @@ async function main() {
   const storageUrl = requiredEnv('DEEP_STORAGE_URL');
   const fileUrl = requiredEnv('DEEP_FILE_URL');
   const pushUrl = requiredEnv('DEEP_PUSH_URL');
+  const callsUrl = process.env.DEEP_CALL_SIGNALING_BASE_URL ?? process.env.DEEP_CALL_SIGNALING_URL;
   const devnetRpcUrl = requiredEnv('DEEP_DEVNET_RPC_URL');
 
   await checkRouter(routerUrl);
@@ -94,6 +95,9 @@ async function main() {
   await checkCompatService(storageUrl, 'storage');
   await checkCompatService(fileUrl, 'file');
   await checkCompatService(pushUrl, 'push');
+  if (callsUrl) {
+    await checkCompatService(callsUrl, 'calls');
+  }
   await checkDevnetRpc(devnetRpcUrl);
 
   console.log('runtime checks passed');

@@ -32,6 +32,7 @@ When an upstream checkout is unavailable, treat existing checked-in fixtures as 
 
 - Storage: signed store/retrieve lifecycle, expiry, deletion, subaccounts, sequence/batch, revocation.
 - File/avatar: upload/download/info/extend, idempotence, avatar state.
+- Calls: runtime health/stats coverage when a call signaling endpoint is configured.
 - Push: subscribe/resubscribe/unsubscribe, signature fields, provider delivery inventory, storage-triggered notify.
 - Registry/router: node registration, VLESS metadata, bootstrap/status/RPC.
 - Staking/contracts: reward/stake projection and devnet health.
