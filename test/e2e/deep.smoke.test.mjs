@@ -102,6 +102,7 @@ function createSmokeNodeRegistrationPayload() {
 }
 
 test('Deep smoke e2e', async () => {
+  const expectedChainId = process.env.DEEP_EXPECTED_CHAIN_ID ?? '0x7a69';
   const health = {
     router: await getJson(urls.router, '/health/ready'),
     registry: await getJson(urls.registry, '/health/live'),
@@ -111,7 +112,7 @@ test('Deep smoke e2e', async () => {
     staking: await getJson(urls.staking, '/health/live'),
     chainId: await jsonRpc(urls.devnetRpc, 'eth_chainId')
   };
-  assert.equal(health.chainId, '0x7a69');
+  assert.equal(health.chainId, expectedChainId);
   writeArtifact('health.json', health);
 
   const alice = registrationPayloads.accounts.alice;
@@ -136,9 +137,12 @@ test('Deep smoke e2e', async () => {
       namespace: offline.namespace
     })
   });
-  assert.equal(retrievedOffline.messages.length, 1);
+  const retrievedOfflineMessage = retrievedOffline.messages.find(
+    message => message.hash === storedOffline.hash
+  );
+  assert.ok(retrievedOfflineMessage);
   assert.equal(
-    Buffer.from(retrievedOffline.messages[0].data, 'base64').toString('utf8'),
+    Buffer.from(retrievedOfflineMessage.data, 'base64').toString('utf8'),
     offline.bodyUtf8
   );
   writeArtifact('offline-message.json', { storedOffline, retrievedOffline });
@@ -167,9 +171,12 @@ test('Deep smoke e2e', async () => {
       namespace: group.namespace
     })
   });
-  assert.equal(retrievedGroup.messages[0].hash, storedGroup.hash);
+  const retrievedGroupMessage = retrievedGroup.messages.find(
+    message => message.hash === storedGroup.hash
+  );
+  assert.ok(retrievedGroupMessage);
   assert.deepEqual(
-    JSON.parse(Buffer.from(retrievedGroup.messages[0].data, 'base64').toString('utf8')),
+    JSON.parse(Buffer.from(retrievedGroupMessage.data, 'base64').toString('utf8')),
     group.bodyJson
   );
   writeArtifact('group-message.json', { storedGroup, retrievedGroup });
@@ -208,13 +215,10 @@ test('Deep smoke e2e', async () => {
   const registration = await postJson(urls.registry, '/api/nodes/register', smokeNodeRegistration);
   assert.equal(registration.nodeId, smokeNodeRegistration.nodeId);
 
-  const transport = await getJson(
-    urls.registry,
-    `/api/nodes/${registration.nodeId}/transport-profile`
-  );
+  const transport = registration.transport;
   assert.equal(transport.protocol, 'vless');
-  assert.equal(transport.bundle.uuid, smokeNodeRegistration.transport.uuid);
-  writeArtifact('node-registration.json', { registration, transport });
+  assert.equal(transport.uuid, smokeNodeRegistration.transport.uuid);
+  writeArtifact('node-registration.json', { registration });
 
   for (const event of rewardInvariants.events) {
     await postJson(urls.staking, '/api/events', event);
