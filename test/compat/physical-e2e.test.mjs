@@ -1,96 +1,358 @@
 import assert from 'node:assert/strict';
+import { link, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { assertArm64WindowsExecutable, createMarkers, interpolate, parseComposePs, preflight, validateConfig } from '../../src/physical-e2e.mjs';
+import example from '../../fixtures/physical-e2e.example.json' with { type: 'json' };
+import {
+  ANDROID_PACKAGE,
+  assertArm64WindowsExecutable,
+  createMarkers,
+  interpolate,
+  parseComposePs,
+  preflight,
+  runPhysicalE2E,
+  sha256,
+  validateConfig,
+  verifyDownloadedAttachment
+} from '../../src/physical-e2e.mjs';
 
-function config() {
-  const selector = { using: 'accessibility id', value: 'DeepSemanticControl' };
-  return {
-    version: 1,
-    compose: {
-      file: 'C:\\compose\\docker-compose.yml', project: 'physical-deep', services: ['router', 'file'],
-      endpointPins: [
-        { service: 'router', url: 'http://127.0.0.1:18081/health/ready', expectedStatus: 200, bodyIncludes: 'ok' },
-        { service: 'file', url: 'http://127.0.0.1:18101/health/ready', expectedStatus: 200 }
-      ]
-    },
-    android: { serial: '192.168.1.45:36969', packageName: 'network.xpoint.deep.e2e', apkPath: 'C:\\builds\\deep.apk', driver: { url: 'http://127.0.0.1:4723' } },
-    windows: { exePath: 'C:\\builds\\deep.exe', processName: 'deep.exe', appDataRoot: 'C:\\evidence\\appdata', driver: { url: 'http://127.0.0.1:4723' } },
-    attachmentPath: 'C:\\fixtures\\attachment.bin',
-    flows: {
-      invalidIdentity: [{ target: 'windows', type: 'setValue', selector, value: '{{invalidIdentity}}' }],
-      mutualIdentity: [{ target: 'windows', type: 'setValue', selector, value: '{{identityAndroid}}' }, { target: 'android', type: 'setValue', selector, value: '{{identityWindows}}' }],
-      windowsToAndroidText: [{ target: 'windows', type: 'setValue', selector, value: '{{windowsToAndroidMessage}}' }, { target: 'android', type: 'assertText', selector, contains: '{{windowsToAndroidMessage}}' }],
-      androidToWindowsText: [{ target: 'android', type: 'setValue', selector, value: '{{androidToWindowsMessage}}' }, { target: 'windows', type: 'assertText', selector, contains: '{{androidToWindowsMessage}}' }],
-      androidToWindowsAttachment: [{ target: 'android', type: 'setValue', selector, value: '{{attachmentPath}}' }, { target: 'windows', type: 'assertFileSha256', path: '{{runAppData}}\\attachment.bin', expected: 'attachment' }],
-      coldRestartVerify: [{ target: 'windows', type: 'assertFileSha256', path: '{{runAppData}}\\attachment.bin', expected: 'attachment' }]
-    },
-    chaos: { enabled: false }
+const signerBytes = Buffer.alloc(48, 0xab);
+const signerHex = signerBytes.toString('hex');
+const signerSha256 = sha256(signerBytes);
+
+function arm64Pe() {
+  const bytes = Buffer.alloc(128);
+  bytes.write('MZ');
+  bytes.writeUInt32LE(64, 0x3c);
+  bytes.write('PE\0\0', 64);
+  bytes.writeUInt16LE(0xaa64, 68);
+  return bytes;
+}
+
+async function localConfig(prefix = 'deep-physical-test-') {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  const config = structuredClone(example);
+  config.compose.file = join(root, 'compose.yml');
+  config.android.apkPath = join(root, 'deep.apk');
+  config.windows.exePath = join(root, config.windows.processName);
+  config.windows.appDataRoot = join(root, 'appdata');
+  config.attachmentPath = join(root, 'source.bin');
+  await writeFile(config.compose.file, 'services: {}');
+  await writeFile(config.android.apkPath, 'apk fixture');
+  await writeFile(config.windows.exePath, arm64Pe());
+  await writeFile(config.attachmentPath, 'decrypted fixture');
+  return { root, config };
+}
+
+function commandMock(config, log, pids = [4101, 4102]) {
+  const permittedPids = [...pids];
+  return async (file, args) => {
+    log.push({ file, args });
+    if (file === 'docker' && args.includes('ps')) {
+      return {
+        stdout: JSON.stringify(config.compose.services.map(Service => ({
+          Service,
+          State: 'running',
+          Health: 'healthy'
+        })))
+      };
+    }
+    if (file === 'aapt') {
+      return { stdout: "package: name='network.xpoint.deep.e2e' versionCode='7' versionName='1.2.3'" };
+    }
+    if (file === 'apksigner') {
+      return { stdout: `Signer #1 certificate SHA-256 digest: ${signerSha256}` };
+    }
+    if (file === 'powershell.exe') {
+      const script = args.at(-1);
+      const pid = Number(script.match(/ProcessId=(\d+)/)[1]);
+      assert.ok(permittedPids.includes(pid));
+      return {
+        stdout: JSON.stringify({
+          ProcessId: pid,
+          Name: config.windows.processName,
+          ExecutablePath: config.windows.exePath,
+          MainWindowHandle: pid + 100
+        })
+      };
+    }
+    if (file === 'adb' && args.includes('get-state')) return { stdout: 'device\n' };
+    if (file === 'adb' && args.includes('pm')) return { stdout: 'package:/data/app/network.xpoint.deep.e2e/base.apk\n' };
+    if (file === 'adb' && args.includes('dumpsys')) {
+      return { stdout: `versionCode=7 versionName=1.2.3 signatures:[${signerHex}]\n` };
+    }
+    return { stdout: '' };
   };
 }
 
-test('physical markers are unique and interpolated without leaking unknown fields', () => {
-  const first = createMarkers('run-1');
-  const second = createMarkers('run-2');
-  assert.notEqual(first.windowsToAndroidMessage, second.windowsToAndroidMessage);
+function webdriverFetch(config, runId, log, downloadWrites) {
+  const markers = createMarkers(runId);
+  const downloadPath = join(config.windows.appDataRoot, `physical-e2e-${runId}`, 'Downloads', markers.attachmentName);
+  const sessions = new Map();
+  let sessionCounter = 0;
+  return async (input, init = {}) => {
+    const url = new URL(input);
+    if (url.pathname.includes('/health/')) {
+      return new Response('{"ok":true}', { status: 200 });
+    }
+    const method = init.method ?? 'GET';
+    log.push({ url: url.href, method, body: init.body });
+    if (url.pathname === '/session' && method === 'POST') {
+      const caps = JSON.parse(init.body).capabilities.alwaysMatch;
+      const id = `session-${++sessionCounter}`;
+      sessions.set(id, caps.platformName.toLowerCase());
+      return Response.json({ value: { sessionId: id, capabilities: caps } });
+    }
+    if (/\/session\/[^/]+$/.test(url.pathname) && method === 'DELETE') {
+      return Response.json({ value: null });
+    }
+    if (url.pathname.endsWith('/element') && method === 'POST') {
+      const selector = JSON.parse(init.body);
+      return Response.json({ value: { 'element-6066-11e4-a52e-4f735466cecf': encodeURIComponent(selector.value) } });
+    }
+    const click = url.pathname.match(/\/session\/([^/]+)\/element\/([^/]+)\/click$/);
+    if (click) {
+      const selector = decodeURIComponent(click[2]);
+      if (selector === 'DownloadAttachmentButton') {
+        downloadWrites.push(downloadPath);
+        await writeFile(downloadPath, 'decrypted fixture');
+      }
+      return Response.json({ value: null });
+    }
+    if (url.pathname.endsWith('/value') && method === 'POST') {
+      return Response.json({ value: null });
+    }
+    const textMatch = url.pathname.match(/\/session\/([^/]+)\/element\/([^/]+)\/text$/);
+    if (textMatch) {
+      const selector = decodeURIComponent(textMatch[2]);
+      const target = sessions.get(textMatch[1]);
+      const values = {
+        OwnIdentity: target === 'windows' ? `05${'1'.repeat(64)}` : `05${'2'.repeat(64)}`,
+        IdentityValidation: 'invalid identity rejected',
+        ContactList: `${markers.contactMarkerWindows} ${markers.contactMarkerAndroid}`,
+        ConversationMessages: `${markers.windowsToAndroidMessage} ${markers.androidToWindowsMessage} ${markers.attachmentName}`,
+        RouteNodeMarker: config.chaos?.expectedRouteNode ?? 'router'
+      };
+      return Response.json({ value: values[selector] ?? '' });
+    }
+    throw new Error(`unexpected fetch ${method} ${url.pathname}`);
+  };
+}
+
+async function harness(runId = 'review-run-0001') {
+  const local = await localConfig();
+  const commandLog = [];
+  const webdriverLog = [];
+  const downloadWrites = [];
+  const pids = [4101, 4102];
+  const dependencies = {
+    command: commandMock(local.config, commandLog, pids),
+    fetch: webdriverFetch(local.config, runId, webdriverLog, downloadWrites),
+    spawn: () => ({ pid: pids.shift() }),
+    sleep: async () => {}
+  };
+  const artifactsDir = join(local.root, 'artifacts');
+  return { ...local, runId, dependencies, commandLog, webdriverLog, downloadWrites, artifactsDir };
+}
+
+test('markers are unique, include the attachment filename, and reject unknown templates', () => {
+  const first = createMarkers('run-0001');
+  const second = createMarkers('run-0002');
+  assert.notEqual(first.attachmentName, second.attachmentName);
+  assert.match(first.attachmentName, /run0001/);
   assert.equal(interpolate('{{windowsToAndroidMessage}}', first), first.windowsToAndroidMessage);
   assert.throws(() => interpolate('{{unknown}}', first), /Unknown physical E2E template/);
 });
 
-test('compose ps parser accepts Docker array and line formats', () => {
+test('compose parser accepts Docker array and line formats', () => {
   assert.equal(parseComposePs('[{"Service":"router"}]').length, 1);
   assert.equal(parseComposePs('{"Service":"router"}\n{"Service":"file"}').length, 2);
 });
 
-test('Windows executable evidence is restricted to ARM64 PE binaries', () => {
-  const arm64 = Buffer.alloc(128);
-  arm64.write('MZ'); arm64.writeUInt32LE(64, 0x3c); arm64.write('PE\0\0', 64); arm64.writeUInt16LE(0xaa64, 68);
-  assert.doesNotThrow(() => assertArm64WindowsExecutable(arm64));
-  arm64.writeUInt16LE(0x8664, 68);
-  assert.throws(() => assertArm64WindowsExecutable(arm64), /ARM64/);
+test('Windows executable gate accepts only ARM64 PE', () => {
+  const bytes = arm64Pe();
+  assert.doesNotThrow(() => assertArm64WindowsExecutable(bytes));
+  bytes.writeUInt16LE(0x8664, 68);
+  assert.throws(() => assertArm64WindowsExecutable(bytes), /ARM64/);
 });
 
-test('config rejects coordinate automation and missing cross-client evidence', () => {
-  const invalid = config();
-  invalid.flows.windowsToAndroidText[0].selector.using = 'xpath';
-  assert.throws(() => validateConfig(invalid), /never coordinates/);
+test('config mutation gates reject coordinates, weak endpoints, incomplete negative flow, and uncorrelated chaos', () => {
+  const coordinate = structuredClone(example);
+  coordinate.flows.invalidIdentity[0].selector.using = 'xpath';
+  assert.throws(() => validateConfig(coordinate), /never coordinates/);
 
-  const missingReceipt = config();
-  missingReceipt.flows.androidToWindowsText[1].target = 'android';
-  assert.throws(() => validateConfig(missingReceipt), /assert receipt on windows/);
+  const endpoint = structuredClone(example);
+  endpoint.compose.endpointPins.pop();
+  assert.throws(() => validateConfig(endpoint), /exactly one successful endpoint pin/);
+
+  const status = structuredClone(example);
+  status.compose.endpointPins[0].expectedStatus = 204;
+  assert.throws(() => validateConfig(status), /must require HTTP 200/);
+
+  const negative = structuredClone(example);
+  negative.flows.invalidIdentity = negative.flows.invalidIdentity.filter(action => action.purpose !== 'invalidIdentityContactAbsent');
+  assert.throws(() => validateConfig(negative), /invalidIdentityContactAbsent/);
+
+  const outside = structuredClone(example);
+  outside.flows.androidToWindowsAttachment.at(-1).target = 'android';
+  assert.throws(() => validateConfig(outside), /must target Windows/);
+
+  const traversal = structuredClone(example);
+  traversal.android.attachmentDirectory = '/sdcard/Download/../../data';
+  assert.throws(() => validateConfig(traversal), /cannot traverse/);
+
+  const chaos = structuredClone(example);
+  chaos.chaos = {
+    enabled: true,
+    expectedRouteNode: 'route-node-001',
+    routeMarker: {
+      target: 'windows',
+      type: 'captureRouteMarker',
+      selector: { using: 'accessibility id', value: 'RouteNodeMarker' },
+      saveAs: 'observedRouteNode',
+      expected: '{{expectedRouteNode}}'
+    },
+    allowlistedServices: ['router'],
+    actions: [{ type: 'shell', routeRef: '{{observedRouteNode}}', routeNode: 'router', service: 'router' }]
+  };
+  assert.throws(() => validateConfig(chaos), /only restartComposeService/);
 });
 
-test('preflight pins healthy compose services, endpoint responses, package and APK metadata', async () => {
-  const commands = [];
+test('download verifier rejects a source/outside path and reparse file', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'deep-download-adversarial-'));
+  const downloadRoot = join(root, 'Downloads');
+  const outside = join(root, 'source.bin');
+  await writeFile(outside, 'fixture');
+  await assert.rejects(verifyDownloadedAttachment(outside, downloadRoot, sha256('fixture')), /escaped/);
+  await mkdir(downloadRoot);
+  const hardLink = join(downloadRoot, 'hard-link.bin');
+  await link(outside, hardLink);
+  await assert.rejects(
+    verifyDownloadedAttachment(hardLink, downloadRoot, sha256('fixture'), undefined, outside),
+    /hard link/
+  );
+
+  const fakeFs = {
+    lstat: async path => path === downloadRoot
+      ? { isSymbolicLink: () => false }
+      : { isSymbolicLink: () => true, isFile: () => true, size: 7 },
+    realpath: async path => path,
+    readFile: async () => Buffer.from('fixture')
+  };
+  await assert.rejects(
+    verifyDownloadedAttachment(join(downloadRoot, 'file.bin'), downloadRoot, sha256('fixture'), fakeFs),
+    /symlink\/reparse/
+  );
+  await rm(root, { recursive: true, force: true });
+});
+
+test('preflight binds APK version and signing identity to installed dumpsys', async () => {
+  const { root, config } = await localConfig();
+  const log = [];
+  const result = await preflight(config, {
+    command: commandMock(config, log),
+    fetch: async () => new Response('{"ok":true}', { status: 200 })
+  }, 'preflight-run');
+  assert.equal(result.android.apk.signingSha256, signerSha256);
+  assert.equal(result.android.apk.versionCode, result.android.installed.versionCode);
+  assert.equal(result.android.apk.versionName, result.android.installed.versionName);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('preflight fails closed on APK/install version mutation', async () => {
+  const { root, config } = await localConfig();
+  const base = commandMock(config, []);
   const command = async (file, args) => {
-    commands.push([file, args]);
-    if (file === 'docker') return { stdout: JSON.stringify([{ Service: 'router', State: 'running', Health: 'healthy' }, { Service: 'file', State: 'running', Health: 'healthy' }]) };
-    if (file === 'aapt') return { stdout: "package: name='network.xpoint.deep.e2e' versionCode='7' versionName='1.2.3'" };
-    if (args.includes('get-state')) return { stdout: 'device\n' };
-    if (args.includes('pm')) return { stdout: 'package:/data/app/network.xpoint.deep.e2e/base.apk\n' };
-    return { stdout: 'versionCode=7 versionName=1.2.3\n' };
+    if (file === 'aapt') return { stdout: "package: name='network.xpoint.deep.e2e' versionCode='8' versionName='1.2.3'" };
+    return base(file, args);
   };
-  const fs = {
-    access: async () => {}, mkdir: async () => {}, writeFile: async () => {},
-    stat: async path => ({ size: path.endsWith('.apk') ? 12 : 34 }),
-    readFile: async path => {
-      if (path.endsWith('.apk')) return Buffer.from('deep fixture');
-      const arm64 = Buffer.alloc(128); arm64.write('MZ'); arm64.writeUInt32LE(64, 0x3c); arm64.write('PE\0\0', 64); arm64.writeUInt16LE(0xaa64, 68);
-      return arm64;
-    }
-  };
-  const fetch = async () => new Response('{"ok":true}', { status: 200 });
-  const result = await preflight(config(), { command, fs, fetch });
-  assert.equal(result.android.installed.versionCode, 7);
-  assert.equal(result.compose.endpoints.length, 2);
-  assert.equal(result.windows.isolatedAppData.includes('physical-e2e-'), true);
-  assert.equal(commands.some(([file]) => file === 'aapt'), true);
+  await assert.rejects(preflight(config, {
+    command,
+    fetch: async () => new Response('{"ok":true}', { status: 200 })
+  }, 'mismatch-run'), /versionCode differs/);
+  await rm(root, { recursive: true, force: true });
 });
 
-test('preflight fails closed when compose health is not healthy', async () => {
-  const broken = config();
-  const command = async file => file === 'docker'
-    ? { stdout: JSON.stringify([{ Service: 'router', State: 'running', Health: 'healthy' }, { Service: 'file', State: 'running', Health: 'starting' }]) }
-    : { stdout: '' };
-  const fs = { access: async () => {}, mkdir: async () => {}, writeFile: async () => {}, stat: async () => ({ size: 1 }), readFile: async () => Buffer.from('x') };
-  await assert.rejects(preflight(broken, { command, fs, fetch: async () => new Response('ok') }), /not healthy/);
+test('mocked runner proves initial hash, deletion, distinct restart PID, driver binding, and cleanup', async () => {
+  const h = await harness();
+  h.config.chaos = {
+    enabled: true,
+    expectedRouteNode: 'route-node-001',
+    routeMarker: {
+      target: 'windows',
+      type: 'captureRouteMarker',
+      selector: { using: 'accessibility id', value: 'RouteNodeMarker' },
+      saveAs: 'observedRouteNode',
+      expected: '{{expectedRouteNode}}'
+    },
+    allowlistedServices: ['router'],
+    actions: [{
+      type: 'restartComposeService',
+      routeRef: '{{observedRouteNode}}',
+      routeNode: 'route-node-001',
+      service: 'router'
+    }]
+  };
+  const evidence = await runPhysicalE2E(h.config, {
+    runId: h.runId,
+    artifactsDir: h.artifactsDir,
+    dependencies: h.dependencies
+  });
+  assert.equal(evidence.status, 'passed');
+  assert.equal(evidence.cleanup.succeeded, true);
+  assert.equal(evidence.chaos.deterministicFailoverClaim, false);
+  assert.match(evidence.chaos.observedRouteNodeSha256, /^[0-9a-f]{64}$/);
+  assert.equal(JSON.stringify(evidence.chaos).includes('route-node-001'), false);
+  assert.deepEqual(evidence.processes.map(item => item.pid), [4101, 4102]);
+  assert.equal(h.downloadWrites.length, 2);
+  assert.deepEqual(evidence.files.filter(item => item.sha256).map(item => item.phase), ['initial', 'afterRestart']);
+  const driverBodies = h.webdriverLog.filter(item => item.url.endsWith('/session') && item.method === 'POST').map(item => JSON.parse(item.body).capabilities.alwaysMatch);
+  assert.ok(driverBodies.some(caps => caps['deep:signingSha256'] === signerSha256 && caps['appium:appPackage'] === ANDROID_PACKAGE));
+  assert.ok(driverBodies.some(caps => caps['deep:processId'] === 4101));
+  assert.ok(driverBodies.some(caps => caps['deep:processId'] === 4102));
+  const forceStops = h.commandLog.filter(item => item.file === 'adb' && item.args.includes('force-stop'));
+  assert.ok(forceStops.length >= 2);
+  assert.ok(h.commandLog.some(item => item.file === 'docker' && item.args.includes('restart') && item.args.includes('router')));
+  await assert.rejects(stat(join(h.config.windows.appDataRoot, `physical-e2e-${h.runId}`)));
+  const artifact = JSON.parse(await readFile(join(h.artifactsDir, 'physical-deep-e2e.json'), 'utf8'));
+  assert.equal(artifact.status, 'passed');
+  assert.equal(JSON.stringify(artifact).includes(h.config.windows.exePath), false);
+  await rm(h.root, { recursive: true, force: true });
+});
+
+test('artifact write failure occurs after mandatory cleanup', async () => {
+  const h = await harness('artifact-failure-0001');
+  h.dependencies.artifactWrite = async () => {
+    throw new Error('artifact disk failure');
+  };
+  await assert.rejects(runPhysicalE2E(h.config, {
+    runId: h.runId,
+    artifactsDir: h.artifactsDir,
+    dependencies: h.dependencies
+  }), /artifact disk failure/);
+  await assert.rejects(stat(join(h.config.windows.appDataRoot, `physical-e2e-${h.runId}`)));
+  assert.ok(h.commandLog.some(item => item.file === 'adb' && item.args.includes('force-stop')));
+  assert.ok(h.commandLog.some(item => item.file === 'taskkill' && item.args.includes('4102')));
+  await rm(h.root, { recursive: true, force: true });
+});
+
+test('one cleanup failure cannot skip later cleanup and prevents passed status', async () => {
+  const h = await harness('cleanup-failure-0001');
+  const baseCommand = h.dependencies.command;
+  h.dependencies.command = async (file, args) => {
+    if (file === 'taskkill' && args.includes('4102')) throw new Error('simulated process cleanup failure');
+    return baseCommand(file, args);
+  };
+  await assert.rejects(runPhysicalE2E(h.config, {
+    runId: h.runId,
+    artifactsDir: h.artifactsDir,
+    dependencies: h.dependencies
+  }), /cleanup did not complete/);
+  await assert.rejects(stat(join(h.config.windows.appDataRoot, `physical-e2e-${h.runId}`)));
+  const artifact = JSON.parse(await readFile(join(h.artifactsDir, 'physical-deep-e2e.json'), 'utf8'));
+  assert.equal(artifact.status, 'failed');
+  assert.equal(artifact.cleanup.succeeded, false);
+  assert.ok(artifact.cleanup.steps.some(step => step.name === 'isolated-appdata' && step.succeeded));
+  await rm(h.root, { recursive: true, force: true });
 });

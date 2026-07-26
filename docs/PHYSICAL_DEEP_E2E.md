@@ -1,60 +1,85 @@
 # Physical Deep E2E Runner
 
-`npm run e2e:physical -- <config.json>` is a deliberately local, fail-closed
-orchestrator for a physical Android client and the Windows ARM64 client. It is
-not a UAT runner and it does not read UAT secrets.
+`npm run e2e:physical -- <config.json>` is a local, fail-closed evidence
+runner for the physical Android client and Windows ARM64 client. It does not
+read UAT configuration or secrets.
 
-Start from [`fixtures/physical-e2e.example.json`](../fixtures/physical-e2e.example.json),
-copy it outside the repository, and replace only local build paths and semantic
-control identifiers. The config is rejected if it contains secret-looking keys.
+Copy [`fixtures/physical-e2e.example.json`](../fixtures/physical-e2e.example.json)
+outside the repository and replace the local build paths and semantic control
+IDs. Version 2 configs reject secret-looking keys, coordinates, XPath, missing
+negative assertions, and incomplete endpoint pins.
 
-The runner requires all of the following before it opens a client UI:
+## Preflight gates
 
-- a named Docker Compose project whose configured services are `running` and
-  `healthy`, plus a pinned health URL and expected response for each endpoint;
-- the exact Wi-Fi ADB serial `192.168.1.45:36969`, an authorized `device`
-  state, and installed package `network.xpoint.deep.e2e`;
-- local APK existence, SHA-256, and `aapt dump badging` package verification,
-  followed by installed version-code/version-name capture;
-- an existing ARM64 PE Windows executable and a newly-created, run-unique AppData root.
-  The Windows process is launched with `APPDATA`, `LOCALAPPDATA`, `TEMP`, and
-  `TMP` beneath that root.
+The clients are not opened until all of these checks pass:
 
-The resulting `physical-deep-e2e.json` contains preflight metadata, unique
-message/identity markers, step evidence, and decrypted attachment SHA-256. It
-does not serialize the config, environment, driver capabilities, or secrets.
+- every configured Compose service resolves to exactly one `running`,
+  `healthy` container;
+- every service has exactly one HTTP 200 endpoint pin with a required
+  successful body marker;
+- ADB reports the exact serial `192.168.1.45:36969` as `device`;
+- package `network.xpoint.deep.e2e` is installed;
+- local `aapt` package/version metadata and `apksigner` certificate SHA-256
+  match the installed `dumpsys package` version and signing certificate;
+- the Windows executable is an ARM64 PE;
+- source attachment and all local inputs exist;
+- the unique AppData and `Downloads` directories are canonical directories,
+  not reparse points.
 
-## Semantic UI contract
+The Android WebDriver session is pinned to the serial, package, version code,
+version name, and signing digest. Each Windows session is attached to the
+top-level window of the exact spawned PID; process name and executable path
+are independently checked. A cold restart must produce a distinct PID.
 
-Every UI operation is a W3C WebDriver action on either the `android` or
-`windows` target. Only `accessibility id` and `id` selectors are accepted;
-XPath, image matching, and screen coordinates are rejected. This allows Appium
-UiAutomator2 resource/accessibility IDs on Android and UI Automation
-`AutomationId`/accessibility IDs on Windows.
+## Required semantic flows
 
-The six required flows are configured as action lists:
+Only `accessibility id` and `id` selectors are allowed.
 
-1. invalid identity rejection;
-2. reciprocal identity addition;
-3. Windows-to-Android correlated text;
-4. Android-to-Windows correlated text;
-5. Android-to-Windows attachment plus a SHA-256 check of the decrypted Windows
-   download; and
-6. a cold restart of both processes followed by the same SHA-256 check.
+1. Enter the unique invalid-ID marker, submit it, assert an explicit rejection,
+   and assert that it is absent from contact state.
+2. Capture and format-check the actual identity from each client. Add each one
+   reciprocally, set unique per-run contact markers, submit, and wait for both
+   contact states.
+3. Enter and submit the Windows-to-Android marker, then wait for that exact
+   marker on Android.
+4. Enter and submit the Android-to-Windows marker, then wait for that exact
+   marker on Windows.
+5. Push a uniquely named source fixture to Android, send it, wait for the
+   correlated filename on Windows, download it, and hash the decrypted file.
+6. Delete that decrypted output, cold-stop both clients, relaunch with a
+   distinct Windows PID, reopen the conversation, download the attachment
+   again, and hash the newly created decrypted file.
 
-The runner validates that text is injected at the sender and read back on the
-other platform. It also validates that both per-run identities are used. Add
-click/submit/wait controls specific to the current UI after the MAUI
-`AutomationId` work lands.
+`assertDownloadedAttachment` has no configurable path. It can only inspect the
+exact per-run `AppData\Downloads\<attachmentName>` destination. The verifier
+rejects source paths, paths outside the unique root, nested destinations,
+symlinks, reparse redirects, and non-regular files.
 
-## Controlled route chaos
+## Route-correlated chaos
 
-Chaos is off by default. When enabled, `chaos.routeMarker` must be a semantic
-`captureRouteMarker` action that reads visible route text and checks its
-expected non-empty marker before any chaos action runs. The evidence records
-the observed marker. The runner intentionally records no “deterministic
-failover” result: a route observation only authorizes a route-correlated
-experiment, it does not prove a deterministic failover property.
+Chaos is disabled by default. If enabled, a semantic `captureRouteMarker`
+action must read a non-empty route-node ID that exactly equals
+`expectedRouteNode`. Each action must reference that captured value, target
+the same route node, use the `restartComposeService` allowlisted action, and
+name an explicitly allowlisted Compose service.
+
+Artifacts contain only SHA-256 hashes of route IDs and explicitly record
+`deterministicFailoverClaim: false`. Observing a route and perturbing its
+service does not prove deterministic failover.
+
+## Cleanup and evidence
+
+Cleanup always attempts every resource independently:
+
+- close both WebDriver sessions;
+- force-stop the Android package;
+- terminate the exact active Windows PID;
+- remove the uniquely named Android attachment;
+- remove the unique Windows AppData tree, including decrypted material.
+
+The run can become `passed` only after every cleanup step succeeds. Evidence is
+written after cleanup; failure to write evidence cannot bypass cleanup. Local
+paths are represented by basename plus a path hash.
 
 ## Local command
 
@@ -64,6 +89,7 @@ $env:DEEP_ARTIFACT_DIR = 'C:\deep-evidence\physical'
 npm run e2e:physical -- C:\private-local-config\physical-deep-e2e.json
 ```
 
-Use an already authenticated local Appium/Windows UI Automation endpoint. The
-runner does not start Docker, install an APK, connect ADB, or alter Android
-state before preflight; those are intentional operator-owned setup actions.
+Operator setup must provide healthy local Compose services, `adb`, `aapt`,
+`apksigner`, and authenticated local Android/Windows Appium drivers. Replace
+the example control IDs with the final MAUI `AutomationId` values before a
+physical run.

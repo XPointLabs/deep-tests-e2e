@@ -1,33 +1,92 @@
 {
-  "version": 1,
+  "version": 2,
   "compose": {
     "file": "C:\\Work\\DeepSession\\XPointLabs\\deep-devops\\docker-compose.yml",
     "project": "deep-physical-e2e",
     "services": ["router", "registry", "storage", "file", "push"],
     "endpointPins": [
-      { "service": "router", "url": "http://127.0.0.1:18081/health/ready", "expectedStatus": 200, "bodyIncludes": "ok" }
+      { "service": "router", "url": "http://127.0.0.1:18081/health/ready", "expectedStatus": 200, "bodyIncludes": "\"ok\":true" },
+      { "service": "registry", "url": "http://127.0.0.1:18080/health/ready", "expectedStatus": 200, "bodyIncludes": "\"ok\":true" },
+      { "service": "storage", "url": "http://127.0.0.1:18100/health/ready", "expectedStatus": 200, "bodyIncludes": "\"ok\":true" },
+      { "service": "file", "url": "http://127.0.0.1:18101/health/ready", "expectedStatus": 200, "bodyIncludes": "\"ok\":true" },
+      { "service": "push", "url": "http://127.0.0.1:18102/health/ready", "expectedStatus": 200, "bodyIncludes": "\"ok\":true" }
     ]
   },
   "android": {
     "serial": "192.168.1.45:36969",
     "packageName": "network.xpoint.deep.e2e",
     "apkPath": "C:\\builds\\Deep.E2E.apk",
-    "driver": { "url": "http://127.0.0.1:4723", "capabilities": { "alwaysMatch": { "platformName": "Android", "appium:automationName": "UiAutomator2" } } }
+    "attachmentDirectory": "/sdcard/Download",
+    "identityPattern": "^05[0-9a-fA-F]{64}$",
+    "driver": {
+      "url": "http://127.0.0.1:4723",
+      "capabilities": {
+        "alwaysMatch": {
+          "platformName": "Android",
+          "appium:automationName": "UiAutomator2"
+        }
+      }
+    }
   },
   "windows": {
     "exePath": "C:\\builds\\Deep.E2E.Windows.exe",
     "processName": "Deep.E2E.Windows.exe",
     "appDataRoot": "C:\\deep-e2e-appdata",
-    "driver": { "url": "http://127.0.0.1:4723", "capabilities": { "alwaysMatch": { "platformName": "Windows" } } }
+    "identityPattern": "^05[0-9a-fA-F]{64}$",
+    "driver": {
+      "url": "http://127.0.0.1:4723",
+      "capabilities": {
+        "alwaysMatch": {
+          "platformName": "Windows"
+        }
+      }
+    }
   },
   "attachmentPath": "C:\\fixtures\\deep-e2e-attachment.bin",
   "flows": {
-    "invalidIdentity": [{ "target": "windows", "type": "setValue", "selector": { "using": "accessibility id", "value": "AddIdentityInput" }, "value": "{{invalidIdentity}}" }, { "target": "windows", "type": "assertText", "selector": { "using": "accessibility id", "value": "IdentityValidation" }, "contains": "invalid" }],
-    "mutualIdentity": [{ "target": "windows", "type": "setValue", "selector": { "using": "accessibility id", "value": "IdentityInput" }, "value": "{{identityAndroid}}" }, { "target": "android", "type": "setValue", "selector": { "using": "accessibility id", "value": "IdentityInput" }, "value": "{{identityWindows}}" }],
-    "windowsToAndroidText": [{ "target": "windows", "type": "setValue", "selector": { "using": "accessibility id", "value": "MessageComposer" }, "value": "{{windowsToAndroidMessage}}" }, { "target": "android", "type": "assertText", "selector": { "using": "accessibility id", "value": "MessageBubble" }, "contains": "{{windowsToAndroidMessage}}" }],
-    "androidToWindowsText": [{ "target": "android", "type": "setValue", "selector": { "using": "accessibility id", "value": "MessageComposer" }, "value": "{{androidToWindowsMessage}}" }, { "target": "windows", "type": "assertText", "selector": { "using": "accessibility id", "value": "MessageBubble" }, "contains": "{{androidToWindowsMessage}}" }],
-    "androidToWindowsAttachment": [{ "target": "android", "type": "setValue", "selector": { "using": "accessibility id", "value": "AttachmentPicker" }, "value": "{{attachmentPath}}" }, { "target": "windows", "type": "assertFileSha256", "path": "{{runAppData}}\\downloaded.bin", "expected": "attachment" }],
-    "coldRestartVerify": [{ "target": "windows", "type": "assertFileSha256", "path": "{{runAppData}}\\downloaded.bin", "expected": "attachment" }]
+    "invalidIdentity": [
+      { "target": "windows", "type": "setValue", "purpose": "invalidIdentityEntry", "selector": { "using": "accessibility id", "value": "AddIdentityInput" }, "value": "{{invalidIdentity}}" },
+      { "target": "windows", "type": "click", "purpose": "invalidIdentitySubmit", "selector": { "using": "accessibility id", "value": "AddIdentitySubmit" } },
+      { "target": "windows", "type": "assertText", "purpose": "invalidIdentityRejection", "selector": { "using": "accessibility id", "value": "IdentityValidation" }, "contains": "invalid" },
+      { "target": "windows", "type": "assertNotText", "purpose": "invalidIdentityContactAbsent", "selector": { "using": "accessibility id", "value": "ContactList" }, "contains": "{{invalidIdentity}}" }
+    ],
+    "mutualIdentity": [
+      { "target": "windows", "type": "captureIdentity", "purpose": "captureWindowsIdentity", "selector": { "using": "accessibility id", "value": "OwnIdentity" }, "saveAs": "actualIdentityWindows" },
+      { "target": "android", "type": "captureIdentity", "purpose": "captureAndroidIdentity", "selector": { "using": "accessibility id", "value": "OwnIdentity" }, "saveAs": "actualIdentityAndroid" },
+      { "target": "windows", "type": "setValue", "purpose": "addIdentityOnwindows", "selector": { "using": "accessibility id", "value": "AddIdentityInput" }, "value": "{{actualIdentityAndroid}}" },
+      { "target": "windows", "type": "setValue", "purpose": "setMarkerOnwindows", "selector": { "using": "accessibility id", "value": "ContactAliasInput" }, "value": "{{contactMarkerAndroid}}" },
+      { "target": "windows", "type": "click", "purpose": "submitContactOnwindows", "selector": { "using": "accessibility id", "value": "AddIdentitySubmit" } },
+      { "target": "windows", "type": "waitText", "purpose": "contactPresentOnwindows", "selector": { "using": "accessibility id", "value": "ContactList" }, "contains": "{{contactMarkerAndroid}}" },
+      { "target": "android", "type": "setValue", "purpose": "addIdentityOnandroid", "selector": { "using": "accessibility id", "value": "AddIdentityInput" }, "value": "{{actualIdentityWindows}}" },
+      { "target": "android", "type": "setValue", "purpose": "setMarkerOnandroid", "selector": { "using": "accessibility id", "value": "ContactAliasInput" }, "value": "{{contactMarkerWindows}}" },
+      { "target": "android", "type": "click", "purpose": "submitContactOnandroid", "selector": { "using": "accessibility id", "value": "AddIdentitySubmit" } },
+      { "target": "android", "type": "waitText", "purpose": "contactPresentOnandroid", "selector": { "using": "accessibility id", "value": "ContactList" }, "contains": "{{contactMarkerWindows}}" }
+    ],
+    "windowsToAndroidText": [
+      { "target": "windows", "type": "setValue", "purpose": "messageEntry", "selector": { "using": "accessibility id", "value": "MessageComposer" }, "value": "{{windowsToAndroidMessage}}" },
+      { "target": "windows", "type": "click", "purpose": "messageSend", "selector": { "using": "accessibility id", "value": "SendMessageButton" } },
+      { "target": "android", "type": "waitText", "purpose": "messageReceive", "selector": { "using": "accessibility id", "value": "ConversationMessages" }, "contains": "{{windowsToAndroidMessage}}", "timeoutMs": 30000 }
+    ],
+    "androidToWindowsText": [
+      { "target": "android", "type": "setValue", "purpose": "messageEntry", "selector": { "using": "accessibility id", "value": "MessageComposer" }, "value": "{{androidToWindowsMessage}}" },
+      { "target": "android", "type": "click", "purpose": "messageSend", "selector": { "using": "accessibility id", "value": "SendMessageButton" } },
+      { "target": "windows", "type": "waitText", "purpose": "messageReceive", "selector": { "using": "accessibility id", "value": "ConversationMessages" }, "contains": "{{androidToWindowsMessage}}", "timeoutMs": 30000 }
+    ],
+    "androidToWindowsAttachment": [
+      { "target": "android", "type": "setValue", "purpose": "attachmentPick", "selector": { "using": "accessibility id", "value": "AttachmentPicker" }, "value": "{{androidAttachmentPath}}" },
+      { "target": "android", "type": "click", "purpose": "attachmentSend", "selector": { "using": "accessibility id", "value": "SendAttachmentButton" } },
+      { "target": "windows", "type": "waitText", "purpose": "attachmentListed", "selector": { "using": "accessibility id", "value": "ConversationMessages" }, "contains": "{{attachmentName}}", "timeoutMs": 30000 },
+      { "target": "windows", "type": "click", "purpose": "attachmentDownload", "selector": { "using": "accessibility id", "value": "DownloadAttachmentButton" } },
+      { "target": "windows", "type": "assertDownloadedAttachment", "purpose": "attachmentInitialHash", "phase": "initial" }
+    ],
+    "coldRestartVerify": [
+      { "target": "windows", "type": "click", "purpose": "reopenConversation", "selector": { "using": "accessibility id", "value": "CorrelatedConversation" } },
+      { "target": "windows", "type": "waitText", "purpose": "attachmentListedAfterRestart", "selector": { "using": "accessibility id", "value": "ConversationMessages" }, "contains": "{{attachmentName}}", "timeoutMs": 30000 },
+      { "target": "windows", "type": "click", "purpose": "attachmentRedownload", "selector": { "using": "accessibility id", "value": "DownloadAttachmentButton" } },
+      { "target": "windows", "type": "assertDownloadedAttachment", "purpose": "attachmentRestartHash", "phase": "afterRestart" }
+    ]
   },
-  "chaos": { "enabled": false }
+  "chaos": {
+    "enabled": false
+  }
 }
