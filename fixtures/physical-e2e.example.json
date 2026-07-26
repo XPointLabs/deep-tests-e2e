@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "compose": {
+    "file": "C:\\Work\\DeepSession\\XPointLabs\\deep-devops\\docker-compose.yml",
+    "project": "deep-physical-e2e",
+    "services": ["router", "registry", "storage", "file", "push"],
+    "endpointPins": [
+      { "service": "router", "url": "http://127.0.0.1:18081/health/ready", "expectedStatus": 200, "bodyIncludes": "ok" }
+    ]
+  },
+  "android": {
+    "serial": "192.168.1.45:36969",
+    "packageName": "network.xpoint.deep.e2e",
+    "apkPath": "C:\\builds\\Deep.E2E.apk",
+    "driver": { "url": "http://127.0.0.1:4723", "capabilities": { "alwaysMatch": { "platformName": "Android", "appium:automationName": "UiAutomator2" } } }
+  },
+  "windows": {
+    "exePath": "C:\\builds\\Deep.E2E.Windows.exe",
+    "processName": "Deep.E2E.Windows.exe",
+    "appDataRoot": "C:\\deep-e2e-appdata",
+    "driver": { "url": "http://127.0.0.1:4723", "capabilities": { "alwaysMatch": { "platformName": "Windows" } } }
+  },
+  "attachmentPath": "C:\\fixtures\\deep-e2e-attachment.bin",
+  "flows": {
+    "invalidIdentity": [{ "target": "windows", "type": "setValue", "selector": { "using": "accessibility id", "value": "AddIdentityInput" }, "value": "{{invalidIdentity}}" }, { "target": "windows", "type": "assertText", "selector": { "using": "accessibility id", "value": "IdentityValidation" }, "contains": "invalid" }],
+    "mutualIdentity": [{ "target": "windows", "type": "setValue", "selector": { "using": "accessibility id", "value": "IdentityInput" }, "value": "{{identityAndroid}}" }, { "target": "android", "type": "setValue", "selector": { "using": "accessibility id", "value": "IdentityInput" }, "value": "{{identityWindows}}" }],
+    "windowsToAndroidText": [{ "target": "windows", "type": "setValue", "selector": { "using": "accessibility id", "value": "MessageComposer" }, "value": "{{windowsToAndroidMessage}}" }, { "target": "android", "type": "assertText", "selector": { "using": "accessibility id", "value": "MessageBubble" }, "contains": "{{windowsToAndroidMessage}}" }],
+    "androidToWindowsText": [{ "target": "android", "type": "setValue", "selector": { "using": "accessibility id", "value": "MessageComposer" }, "value": "{{androidToWindowsMessage}}" }, { "target": "windows", "type": "assertText", "selector": { "using": "accessibility id", "value": "MessageBubble" }, "contains": "{{androidToWindowsMessage}}" }],
+    "androidToWindowsAttachment": [{ "target": "android", "type": "setValue", "selector": { "using": "accessibility id", "value": "AttachmentPicker" }, "value": "{{attachmentPath}}" }, { "target": "windows", "type": "assertFileSha256", "path": "{{runAppData}}\\downloaded.bin", "expected": "attachment" }],
+    "coldRestartVerify": [{ "target": "windows", "type": "assertFileSha256", "path": "{{runAppData}}\\downloaded.bin", "expected": "attachment" }]
+  },
+  "chaos": { "enabled": false }
+}

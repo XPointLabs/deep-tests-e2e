@@ -15,6 +15,7 @@
     "e2e:smoke": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.smoke.test.mjs",
     "e2e:load": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.load.test.mjs",
     "e2e:full": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.smoke.test.mjs test/e2e/*.full.test.mjs test/e2e/*.load.test.mjs",
+    "e2e:physical": "node scripts/run-physical-e2e.mjs",
     "ci:smoke": "npm run runtime:checks && npm run fixtures:validate && npm run compat && npm run e2e:smoke",
     "ci:full": "npm run runtime:checks && npm run fixtures:validate && npm run compat && npm run e2e:full"
   }

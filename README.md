@@ -34,6 +34,14 @@ npm run fixtures:validate
 npm run compat
 ```
 
+## Physical Android + Windows evidence
+
+For a local physical-client rehearsal (not UAT), see
+[`docs/PHYSICAL_DEEP_E2E.md`](docs/PHYSICAL_DEEP_E2E.md). The runner starts
+fail-closed against the pinned Android Wi-Fi device/package and a healthy,
+named local Compose project; it writes a machine-readable evidence artifact
+only after all cross-platform checks complete.
+
 ## Fixture Coverage
 
 - message vectors from Session desktop/Appium automation flows and storage server network-test semantics
