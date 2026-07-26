@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import * as fsPromises from 'node:fs/promises';
 import { link, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +8,7 @@ import example from '../../fixtures/physical-e2e.example.json' with { type: 'jso
 import {
   ANDROID_PACKAGE,
   assertArm64WindowsExecutable,
+  assertPathAbsent,
   createMarkers,
   interpolate,
   parseComposePs,
@@ -86,6 +88,14 @@ function commandMock(config, log, pids = [4101, 4102]) {
   };
 }
 
+function endpointFetch(config) {
+  return async input => {
+    const url = new URL(input);
+    const pin = config.compose.endpointPins.find(item => new URL(item.url).port === url.port);
+    return new Response(`{"ok":true,"service":"${pin?.service}"}`, { status: 200 });
+  };
+}
+
 function webdriverFetch(config, runId, log, downloadWrites) {
   const markers = createMarkers(runId);
   const downloadPath = join(config.windows.appDataRoot, `physical-e2e-${runId}`, 'Downloads', markers.attachmentName);
@@ -94,7 +104,9 @@ function webdriverFetch(config, runId, log, downloadWrites) {
   return async (input, init = {}) => {
     const url = new URL(input);
     if (url.pathname.includes('/health/')) {
-      return new Response('{"ok":true}', { status: 200 });
+      const pin = config.compose.endpointPins.find(item => new URL(item.url).port === url.port);
+      log.push({ endpointService: pin?.service, url: url.href });
+      return new Response(`{"ok":true,"service":"${pin?.service}"}`, { status: 200 });
     }
     const method = init.method ?? 'GET';
     log.push({ url: url.href, method, body: init.body });
@@ -157,10 +169,10 @@ async function harness(runId = 'review-run-0001') {
 }
 
 test('markers are unique, include the attachment filename, and reject unknown templates', () => {
-  const first = createMarkers('run-0001');
-  const second = createMarkers('run-0002');
+  const first = createMarkers('same-long-prefix-0000000000000000000000000001');
+  const second = createMarkers('same-long-prefix-0000000000000000000000000002');
   assert.notEqual(first.attachmentName, second.attachmentName);
-  assert.match(first.attachmentName, /run0001/);
+  assert.match(first.attachmentName, /^deep-e2e-attachment-[0-9a-f]{20}\.bin$/);
   assert.equal(interpolate('{{windowsToAndroidMessage}}', first), first.windowsToAndroidMessage);
   assert.throws(() => interpolate('{{unknown}}', first), /Unknown physical E2E template/);
 });
@@ -186,6 +198,15 @@ test('config mutation gates reject coordinates, weak endpoints, incomplete negat
   endpoint.compose.endpointPins.pop();
   assert.throws(() => validateConfig(endpoint), /exactly one successful endpoint pin/);
 
+  const relabeled = structuredClone(example);
+  relabeled.compose.endpointPins[1].url = `${relabeled.compose.endpointPins[0].url}/`;
+  relabeled.compose.endpointPins[1].bodyIncludes = '"service":"registry"';
+  assert.throws(() => validateConfig(relabeled), /reuses another service URL/);
+
+  const genericMarker = structuredClone(example);
+  genericMarker.compose.endpointPins[0].bodyIncludes = '"ok":true';
+  assert.throws(() => validateConfig(genericMarker), /service-specific/);
+
   const status = structuredClone(example);
   status.compose.endpointPins[0].expectedStatus = 204;
   assert.throws(() => validateConfig(status), /must require HTTP 200/);
@@ -193,6 +214,24 @@ test('config mutation gates reject coordinates, weak endpoints, incomplete negat
   const negative = structuredClone(example);
   negative.flows.invalidIdentity = negative.flows.invalidIdentity.filter(action => action.purpose !== 'invalidIdentityContactAbsent');
   assert.throws(() => validateConfig(negative), /invalidIdentityContactAbsent/);
+
+  const reordered = structuredClone(example);
+  [reordered.flows.windowsToAndroidText[0], reordered.flows.windowsToAndroidText[1]] =
+    [reordered.flows.windowsToAndroidText[1], reordered.flows.windowsToAndroidText[0]];
+  assert.throws(() => validateConfig(reordered), /strict order/);
+
+  const earlyHash = structuredClone(example);
+  [earlyHash.flows.androidToWindowsAttachment[3], earlyHash.flows.androidToWindowsAttachment[4]] =
+    [earlyHash.flows.androidToWindowsAttachment[4], earlyHash.flows.androidToWindowsAttachment[3]];
+  assert.throws(() => validateConfig(earlyHash), /strict order/);
+
+  const wrongNegativeTarget = structuredClone(example);
+  wrongNegativeTarget.flows.invalidIdentity.at(-1).target = 'android';
+  assert.throws(() => validateConfig(wrongNegativeTarget), /invalidIdentityContactAbsent/);
+
+  const duplicatePurpose = structuredClone(example);
+  duplicatePurpose.flows.androidToWindowsText[1].purpose = 'messageEntry';
+  assert.throws(() => validateConfig(duplicatePurpose), /purposes must be unique/);
 
   const outside = structuredClone(example);
   outside.flows.androidToWindowsAttachment.at(-1).target = 'android';
@@ -206,6 +245,8 @@ test('config mutation gates reject coordinates, weak endpoints, incomplete negat
   chaos.chaos = {
     enabled: true,
     expectedRouteNode: 'route-node-001',
+    healthTimeoutMs: 5000,
+    healthPollMs: 250,
     routeMarker: {
       target: 'windows',
       type: 'captureRouteMarker',
@@ -213,10 +254,15 @@ test('config mutation gates reject coordinates, weak endpoints, incomplete negat
       saveAs: 'observedRouteNode',
       expected: '{{expectedRouteNode}}'
     },
-    allowlistedServices: ['router'],
-    actions: [{ type: 'shell', routeRef: '{{observedRouteNode}}', routeNode: 'router', service: 'router' }]
+    routeBindings: [{ routeNode: 'another-node', composeService: 'router' }],
+    actions: [{ type: 'restartComposeService', routeRef: '{{observedRouteNode}}' }]
   };
-  assert.throws(() => validateConfig(chaos), /only restartComposeService/);
+  assert.throws(() => validateConfig(chaos), /exactly one compose service binding/);
+
+  const routeOverride = structuredClone(chaos);
+  routeOverride.chaos.routeBindings = [{ routeNode: 'route-node-001', composeService: 'router' }];
+  routeOverride.chaos.actions[0].service = 'file';
+  assert.throws(() => validateConfig(routeOverride), /must be derived/);
 });
 
 test('download verifier rejects a source/outside path and reparse file', async () => {
@@ -228,8 +274,9 @@ test('download verifier rejects a source/outside path and reparse file', async (
   await mkdir(downloadRoot);
   const hardLink = join(downloadRoot, 'hard-link.bin');
   await link(outside, hardLink);
+  const sourceIdentity = await stat(outside);
   await assert.rejects(
-    verifyDownloadedAttachment(hardLink, downloadRoot, sha256('fixture'), undefined, outside),
+    verifyDownloadedAttachment(hardLink, downloadRoot, sha256('fixture'), undefined, sourceIdentity),
     /hard link/
   );
 
@@ -247,12 +294,29 @@ test('download verifier rejects a source/outside path and reparse file', async (
   await rm(root, { recursive: true, force: true });
 });
 
+test('deletion proof accepts ENOENT only', async () => {
+  await assert.doesNotReject(assertPathAbsent({
+    access: async () => {
+      const error = new Error('missing');
+      error.code = 'ENOENT';
+      throw error;
+    }
+  }, 'C:\\isolated\\download.bin', 'download'));
+  await assert.rejects(assertPathAbsent({
+    access: async () => {
+      const error = new Error('denied');
+      error.code = 'EACCES';
+      throw error;
+    }
+  }, 'C:\\isolated\\download.bin', 'download'), /failed with EACCES/);
+});
+
 test('preflight binds APK version and signing identity to installed dumpsys', async () => {
   const { root, config } = await localConfig();
   const log = [];
   const result = await preflight(config, {
     command: commandMock(config, log),
-    fetch: async () => new Response('{"ok":true}', { status: 200 })
+    fetch: endpointFetch(config)
   }, 'preflight-run');
   assert.equal(result.android.apk.signingSha256, signerSha256);
   assert.equal(result.android.apk.versionCode, result.android.installed.versionCode);
@@ -269,16 +333,47 @@ test('preflight fails closed on APK/install version mutation', async () => {
   };
   await assert.rejects(preflight(config, {
     command,
-    fetch: async () => new Response('{"ok":true}', { status: 200 })
+    fetch: endpointFetch(config)
   }, 'mismatch-run'), /versionCode differs/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('preflight rejects a source symlink before its referent can be hard-linked into Downloads', async () => {
+  const { root, config } = await localConfig();
+  const wrappedFs = {
+    ...fsPromises,
+    lstat: async path => path === config.attachmentPath
+      ? { isSymbolicLink: () => true }
+      : fsPromises.lstat(path)
+  };
+  await assert.rejects(preflight(config, {
+    command: commandMock(config, []),
+    fetch: endpointFetch(config),
+    fs: wrappedFs
+  }, 'source-symlink-run'), /source cannot be a symlink\/reparse/);
+  assert.equal(await fsPromises.access(config.windows.appDataRoot).then(() => true, () => false), false);
   await rm(root, { recursive: true, force: true });
 });
 
 test('mocked runner proves initial hash, deletion, distinct restart PID, driver binding, and cleanup', async () => {
   const h = await harness();
+  const baseCommand = h.dependencies.command;
+  let zeroHandleOnce = true;
+  h.dependencies.command = async (file, args) => {
+    const result = await baseCommand(file, args);
+    if (file === 'powershell.exe' && zeroHandleOnce) {
+      zeroHandleOnce = false;
+      const metadata = JSON.parse(result.stdout);
+      metadata.MainWindowHandle = 0;
+      return { stdout: JSON.stringify(metadata) };
+    }
+    return result;
+  };
   h.config.chaos = {
     enabled: true,
     expectedRouteNode: 'route-node-001',
+    healthTimeoutMs: 5000,
+    healthPollMs: 250,
     routeMarker: {
       target: 'windows',
       type: 'captureRouteMarker',
@@ -286,13 +381,8 @@ test('mocked runner proves initial hash, deletion, distinct restart PID, driver 
       saveAs: 'observedRouteNode',
       expected: '{{expectedRouteNode}}'
     },
-    allowlistedServices: ['router'],
-    actions: [{
-      type: 'restartComposeService',
-      routeRef: '{{observedRouteNode}}',
-      routeNode: 'route-node-001',
-      service: 'router'
-    }]
+    routeBindings: [{ routeNode: 'route-node-001', composeService: 'router' }],
+    actions: [{ type: 'restartComposeService', routeRef: '{{observedRouteNode}}' }]
   };
   const evidence = await runPhysicalE2E(h.config, {
     runId: h.runId,
@@ -304,6 +394,7 @@ test('mocked runner proves initial hash, deletion, distinct restart PID, driver 
   assert.equal(evidence.chaos.deterministicFailoverClaim, false);
   assert.match(evidence.chaos.observedRouteNodeSha256, /^[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(evidence.chaos).includes('route-node-001'), false);
+  assert.equal(evidence.chaos.actions[0].health.service, 'router');
   assert.deepEqual(evidence.processes.map(item => item.pid), [4101, 4102]);
   assert.equal(h.downloadWrites.length, 2);
   assert.deepEqual(evidence.files.filter(item => item.sha256).map(item => item.phase), ['initial', 'afterRestart']);
@@ -313,7 +404,9 @@ test('mocked runner proves initial hash, deletion, distinct restart PID, driver 
   assert.ok(driverBodies.some(caps => caps['deep:processId'] === 4102));
   const forceStops = h.commandLog.filter(item => item.file === 'adb' && item.args.includes('force-stop'));
   assert.ok(forceStops.length >= 2);
+  assert.equal(h.commandLog.filter(item => item.file === 'powershell.exe').length, 3);
   assert.ok(h.commandLog.some(item => item.file === 'docker' && item.args.includes('restart') && item.args.includes('router')));
+  assert.ok(h.webdriverLog.filter(item => item.endpointService === 'router').length >= 2);
   await assert.rejects(stat(join(h.config.windows.appDataRoot, `physical-e2e-${h.runId}`)));
   const artifact = JSON.parse(await readFile(join(h.artifactsDir, 'physical-deep-e2e.json'), 'utf8'));
   assert.equal(artifact.status, 'passed');

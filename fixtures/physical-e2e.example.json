@@ -5,11 +5,11 @@
     "project": "deep-physical-e2e",
     "services": ["router", "registry", "storage", "file", "push"],
     "endpointPins": [
-      { "service": "router", "url": "http://127.0.0.1:18081/health/ready", "expectedStatus": 200, "bodyIncludes": "\"ok\":true" },
-      { "service": "registry", "url": "http://127.0.0.1:18080/health/ready", "expectedStatus": 200, "bodyIncludes": "\"ok\":true" },
-      { "service": "storage", "url": "http://127.0.0.1:18100/health/ready", "expectedStatus": 200, "bodyIncludes": "\"ok\":true" },
-      { "service": "file", "url": "http://127.0.0.1:18101/health/ready", "expectedStatus": 200, "bodyIncludes": "\"ok\":true" },
-      { "service": "push", "url": "http://127.0.0.1:18102/health/ready", "expectedStatus": 200, "bodyIncludes": "\"ok\":true" }
+      { "service": "router", "url": "http://127.0.0.1:18081/health/ready", "expectedStatus": 200, "bodyIncludes": "\"service\":\"router\"" },
+      { "service": "registry", "url": "http://127.0.0.1:18080/health/ready", "expectedStatus": 200, "bodyIncludes": "\"service\":\"registry\"" },
+      { "service": "storage", "url": "http://127.0.0.1:18100/health/ready", "expectedStatus": 200, "bodyIncludes": "\"service\":\"storage\"" },
+      { "service": "file", "url": "http://127.0.0.1:18101/health/ready", "expectedStatus": 200, "bodyIncludes": "\"service\":\"file\"" },
+      { "service": "push", "url": "http://127.0.0.1:18102/health/ready", "expectedStatus": 200, "bodyIncludes": "\"service\":\"push\"" }
     ]
   },
   "android": {
@@ -32,6 +32,8 @@
     "exePath": "C:\\builds\\Deep.E2E.Windows.exe",
     "processName": "Deep.E2E.Windows.exe",
     "appDataRoot": "C:\\deep-e2e-appdata",
+    "launchTimeoutMs": 15000,
+    "launchPollMs": 250,
     "identityPattern": "^05[0-9a-fA-F]{64}$",
     "driver": {
       "url": "http://127.0.0.1:4723",
@@ -48,7 +50,7 @@
       { "target": "windows", "type": "setValue", "purpose": "invalidIdentityEntry", "selector": { "using": "accessibility id", "value": "AddIdentityInput" }, "value": "{{invalidIdentity}}" },
       { "target": "windows", "type": "click", "purpose": "invalidIdentitySubmit", "selector": { "using": "accessibility id", "value": "AddIdentitySubmit" } },
       { "target": "windows", "type": "assertText", "purpose": "invalidIdentityRejection", "selector": { "using": "accessibility id", "value": "IdentityValidation" }, "contains": "invalid" },
-      { "target": "windows", "type": "assertNotText", "purpose": "invalidIdentityContactAbsent", "selector": { "using": "accessibility id", "value": "ContactList" }, "contains": "{{invalidIdentity}}" }
+      { "target": "windows", "type": "assertNotTextStable", "purpose": "invalidIdentityContactAbsent", "selector": { "using": "accessibility id", "value": "ContactList" }, "contains": "{{invalidIdentity}}", "stabilityMs": 2000 }
     ],
     "mutualIdentity": [
       { "target": "windows", "type": "captureIdentity", "purpose": "captureWindowsIdentity", "selector": { "using": "accessibility id", "value": "OwnIdentity" }, "saveAs": "actualIdentityWindows" },

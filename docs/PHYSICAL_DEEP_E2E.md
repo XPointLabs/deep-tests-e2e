@@ -15,28 +15,36 @@ The clients are not opened until all of these checks pass:
 
 - every configured Compose service resolves to exactly one `running`,
   `healthy` container;
-- every service has exactly one HTTP 200 endpoint pin with a required
-  successful body marker;
+- every service has exactly one normalized, unique HTTP 200 endpoint URL and a
+  body marker containing that service identity;
 - ADB reports the exact serial `192.168.1.45:36969` as `device`;
 - package `network.xpoint.deep.e2e` is installed;
 - local `aapt` package/version metadata and `apksigner` certificate SHA-256
   match the installed `dumpsys package` version and signing certificate;
 - the Windows executable is an ARM64 PE;
-- source attachment and all local inputs exist;
+- the source attachment is a canonical regular file, not a symlink/reparse
+  path, and its followed filesystem identity is captured;
 - the unique AppData and `Downloads` directories are canonical directories,
   not reparse points.
+
+Per-run UI markers use a SHA-256 prefix of the complete run ID, avoiding
+collisions between long IDs with a shared prefix.
 
 The Android WebDriver session is pinned to the serial, package, version code,
 version name, and signing digest. Each Windows session is attached to the
 top-level window of the exact spawned PID; process name and executable path
-are independently checked. A cold restart must produce a distinct PID.
+are independently checked. A bounded poll requires a nonzero top-level window
+handle. A cold restart must produce a distinct PID.
 
 ## Required semantic flows
 
-Only `accessibility id` and `id` selectors are allowed.
+Only `accessibility id` and `id` selectors are allowed. Action purposes must be
+unique within each flow, and the documented submit/receive/download order is
+validated before UI startup.
 
-1. Enter the unique invalid-ID marker, submit it, assert an explicit rejection,
-   and assert that it is absent from contact state.
+1. Enter the unique invalid-ID marker, submit it, assert an explicit rejection
+   on that client, and prove throughout a stability window that it remains
+   absent from contact state.
 2. Capture and format-check the actual identity from each client. Add each one
    reciprocally, set unique per-run contact markers, submit, and wait for both
    contact states.
@@ -53,15 +61,18 @@ Only `accessibility id` and `id` selectors are allowed.
 `assertDownloadedAttachment` has no configurable path. It can only inspect the
 exact per-run `AppData\Downloads\<attachmentName>` destination. The verifier
 rejects source paths, paths outside the unique root, nested destinations,
-symlinks, reparse redirects, and non-regular files.
+symlinks, reparse redirects, non-regular files, the followed source referent,
+and hard links to its filesystem identity. Deletion between phases must be
+observed specifically as `ENOENT`.
 
 ## Route-correlated chaos
 
 Chaos is disabled by default. If enabled, a semantic `captureRouteMarker`
 action must read a non-empty route-node ID that exactly equals
-`expectedRouteNode`. Each action must reference that captured value, target
-the same route node, use the `restartComposeService` allowlisted action, and
-name an explicitly allowlisted Compose service.
+`expectedRouteNode`. `routeBindings` maps that node to exactly one Compose
+service. Each action references the captured value; the runner derives the
+restart target only from that binding and re-probes its endpoint pin after the
+restart.
 
 Artifacts contain only SHA-256 hashes of route IDs and explicitly record
 `deterministicFailoverClaim: false`. Observing a route and perturbing its

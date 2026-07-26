@@ -35,7 +35,7 @@ const UI_ACTIONS = new Set([
   'click',
   'assertText',
   'waitText',
-  'assertNotText',
+  'assertNotTextStable',
   'captureIdentity',
   'captureRouteMarker',
   'assertDownloadedAttachment'
@@ -44,8 +44,7 @@ const fsDefault = { access, lstat, mkdir, readFile, realpath, rm, stat, unlink, 
 
 export function createMarkers(runId = randomUUID()) {
   assert.match(runId, /^[A-Za-z0-9][A-Za-z0-9-]{3,79}$/, 'runId must be a safe 4-80 character identifier');
-  const compact = runId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
-  assert.ok(compact.length >= 4, 'runId must contain at least four alphanumeric characters');
+  const compact = sha256(runId).slice(0, 20);
   return {
     runId,
     invalidIdentity: `deep-e2e-invalid-${compact}`,
@@ -63,6 +62,17 @@ export function sha256(bytes) {
 
 function pathFingerprint(path) {
   return { basename: basename(path), pathSha256: sha256(resolve(path).toLowerCase()) };
+}
+
+function normalizeEndpointUrl(value) {
+  const url = new URL(value);
+  assert.ok(['http:', 'https:'].includes(url.protocol), 'endpoint pin must use HTTP(S)');
+  assert.equal(url.username, '', 'endpoint pin cannot contain credentials');
+  assert.equal(url.password, '', 'endpoint pin cannot contain credentials');
+  url.hash = '';
+  if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, '');
+  url.searchParams.sort();
+  return url.href;
 }
 
 export function assertArm64WindowsExecutable(bytes) {
@@ -130,8 +140,11 @@ function validateAction(action, name) {
   }
   validateSelector(action, name);
   if (action.type === 'setValue') required(typeof action.value === 'string', `${name} setValue needs value`);
-  if (['assertText', 'waitText', 'assertNotText'].includes(action.type)) {
+  if (['assertText', 'waitText', 'assertNotTextStable'].includes(action.type)) {
     required(typeof action.contains === 'string' && action.contains.length > 0, `${name} ${action.type} needs contains`);
+  }
+  if (action.type === 'assertNotTextStable') {
+    assert.ok(Number.isInteger(action.stabilityMs) && action.stabilityMs >= 1_000 && action.stabilityMs <= 60_000, `${name} stabilityMs must be 1000-60000`);
   }
   if (action.type === 'captureIdentity') {
     assert.ok(['actualIdentityWindows', 'actualIdentityAndroid'].includes(action.saveAs), `${name} has invalid identity destination`);
@@ -146,6 +159,14 @@ function requirePurpose(actions, purpose, predicate = () => true) {
   assert.ok(hasAction(actions, action => action.purpose === purpose && predicate(action)), `flow is missing required '${purpose}' evidence`);
 }
 
+function requireOrderedPurposes(flowName, actions, purposes) {
+  const positions = purposes.map(purpose => actions.findIndex(action => action.purpose === purpose));
+  assert.ok(positions.every(position => position >= 0), `${flowName} is missing an ordered purpose`);
+  for (let index = 1; index < positions.length; index += 1) {
+    assert.ok(positions[index] > positions[index - 1], `${flowName} purposes must follow strict order: ${purposes.join(' -> ')}`);
+  }
+}
+
 export function validateConfig(config) {
   assert.equal(config?.version, 2, 'physical E2E config.version must be 2');
   rejectSecrets(config);
@@ -156,13 +177,17 @@ export function validateConfig(config) {
   assert.ok(Array.isArray(compose.services) && compose.services.length > 0, 'compose.services is required');
   assert.equal(new Set(compose.services).size, compose.services.length, 'compose.services must be unique');
   assert.equal(compose.endpointPins?.length, compose.services.length, 'every compose service needs exactly one successful endpoint pin');
+  const normalizedEndpointUrls = new Set();
   for (const service of compose.services) {
     const pins = compose.endpointPins.filter(pin => pin.service === service);
     assert.equal(pins.length, 1, `compose service '${service}' needs exactly one endpoint pin`);
     const [pin] = pins;
-    assert.ok(/^https?:\/\//.test(pin.url), `endpoint pin '${service}' needs an http(s) URL`);
+    const normalizedUrl = normalizeEndpointUrl(pin.url);
+    assert.equal(normalizedEndpointUrls.has(normalizedUrl), false, `endpoint pin '${service}' reuses another service URL`);
+    normalizedEndpointUrls.add(normalizedUrl);
     assert.equal(pin.expectedStatus, 200, `endpoint pin '${service}' must require HTTP 200`);
     assert.ok(typeof pin.bodyIncludes === 'string' && pin.bodyIncludes.length > 0, `endpoint pin '${service}' needs an exact successful body marker`);
+    assert.ok(pin.bodyIncludes.toLowerCase().includes(service.toLowerCase()), `endpoint pin '${service}' body marker must be service-specific`);
   }
 
   const android = required(config.android, 'android configuration is required');
@@ -183,6 +208,8 @@ export function validateConfig(config) {
   assert.ok(typeof windows.exePath === 'string' && isAbsolute(windows.exePath), 'windows.exePath must be absolute');
   required(typeof windows.processName === 'string' && windows.processName.length > 0, 'windows.processName is required');
   assert.ok(typeof windows.appDataRoot === 'string' && isAbsolute(windows.appDataRoot), 'windows.appDataRoot must be absolute');
+  assert.ok(Number.isInteger(windows.launchTimeoutMs) && windows.launchTimeoutMs >= 1_000 && windows.launchTimeoutMs <= 60_000, 'windows.launchTimeoutMs must be 1000-60000');
+  assert.ok(Number.isInteger(windows.launchPollMs) && windows.launchPollMs >= 50 && windows.launchPollMs <= 1_000, 'windows.launchPollMs must be 50-1000');
   assert.equal(windows.driver?.capabilities?.alwaysMatch?.platformName, 'Windows', 'Windows driver platformName must be Windows');
   for (const managed of ['appium:app', 'appium:appTopLevelWindow', 'deep:processId', 'deep:executableSha256']) {
     assert.equal(Object.hasOwn(windows.driver.capabilities.alwaysMatch, managed), false, `runner exclusively manages Windows capability '${managed}'`);
@@ -195,13 +222,23 @@ export function validateConfig(config) {
   for (const flow of REQUIRED_FLOWS) {
     assert.ok(Array.isArray(flows[flow]) && flows[flow].length > 0, `required flow '${flow}' is missing`);
     flows[flow].forEach((action, index) => validateAction(action, `flows.${flow}[${index}]`));
+    const purposes = flows[flow].map(action => action.purpose);
+    assert.ok(purposes.every(purpose => typeof purpose === 'string' && purpose.length > 0), `${flow} actions need explicit purposes`);
+    assert.equal(new Set(purposes).size, purposes.length, `${flow} action purposes must be unique`);
   }
 
   const invalid = flows.invalidIdentity;
+  const invalidTarget = invalid.find(action => action.purpose === 'invalidIdentityEntry')?.target;
   requirePurpose(invalid, 'invalidIdentityEntry', action => action.type === 'setValue' && action.value.includes('{{invalidIdentity}}'));
-  requirePurpose(invalid, 'invalidIdentitySubmit', action => action.type === 'click');
-  requirePurpose(invalid, 'invalidIdentityRejection', action => action.type === 'assertText');
-  requirePurpose(invalid, 'invalidIdentityContactAbsent', action => action.type === 'assertNotText' && action.contains.includes('{{invalidIdentity}}'));
+  requirePurpose(invalid, 'invalidIdentitySubmit', action => action.target === invalidTarget && action.type === 'click');
+  requirePurpose(invalid, 'invalidIdentityRejection', action => action.target === invalidTarget && action.type === 'assertText');
+  requirePurpose(invalid, 'invalidIdentityContactAbsent', action => action.target === invalidTarget && action.type === 'assertNotTextStable' && action.contains.includes('{{invalidIdentity}}'));
+  requireOrderedPurposes('invalidIdentity', invalid, [
+    'invalidIdentityEntry',
+    'invalidIdentitySubmit',
+    'invalidIdentityRejection',
+    'invalidIdentityContactAbsent'
+  ]);
 
   const mutual = flows.mutualIdentity;
   requirePurpose(mutual, 'captureWindowsIdentity', action => action.type === 'captureIdentity' && action.target === 'windows' && action.saveAs === 'actualIdentityWindows');
@@ -215,6 +252,18 @@ export function validateConfig(config) {
     requirePurpose(mutual, `submitContactOn${target}`, action => action.target === target && action.type === 'click');
     requirePurpose(mutual, `contactPresentOn${target}`, action => action.target === target && action.type === 'waitText' && action.contains.includes(marker));
   }
+  requireOrderedPurposes('mutualIdentity', mutual, [
+    'captureWindowsIdentity',
+    'captureAndroidIdentity',
+    'addIdentityOnwindows',
+    'setMarkerOnwindows',
+    'submitContactOnwindows',
+    'contactPresentOnwindows',
+    'addIdentityOnandroid',
+    'setMarkerOnandroid',
+    'submitContactOnandroid',
+    'contactPresentOnandroid'
+  ]);
 
   for (const [flow, sender, receiver, marker] of [
     ['windowsToAndroidText', 'windows', 'android', '{{windowsToAndroidMessage}}'],
@@ -223,6 +272,7 @@ export function validateConfig(config) {
     requirePurpose(flows[flow], 'messageEntry', action => action.target === sender && action.type === 'setValue' && action.value.includes(marker));
     requirePurpose(flows[flow], 'messageSend', action => action.target === sender && action.type === 'click');
     requirePurpose(flows[flow], 'messageReceive', action => action.target === receiver && action.type === 'waitText' && action.contains.includes(marker));
+    requireOrderedPurposes(flow, flows[flow], ['messageEntry', 'messageSend', 'messageReceive']);
   }
 
   const attachment = flows.androidToWindowsAttachment;
@@ -231,27 +281,45 @@ export function validateConfig(config) {
   requirePurpose(attachment, 'attachmentListed', action => action.target === 'windows' && action.type === 'waitText' && action.contains.includes('{{attachmentName}}'));
   requirePurpose(attachment, 'attachmentDownload', action => action.target === 'windows' && action.type === 'click');
   requirePurpose(attachment, 'attachmentInitialHash', action => action.type === 'assertDownloadedAttachment' && action.phase === 'initial');
+  requireOrderedPurposes('androidToWindowsAttachment', attachment, [
+    'attachmentPick',
+    'attachmentSend',
+    'attachmentListed',
+    'attachmentDownload',
+    'attachmentInitialHash'
+  ]);
 
   const restart = flows.coldRestartVerify;
   requirePurpose(restart, 'reopenConversation', action => action.target === 'windows' && action.type === 'click');
   requirePurpose(restart, 'attachmentListedAfterRestart', action => action.target === 'windows' && action.type === 'waitText' && action.contains.includes('{{attachmentName}}'));
   requirePurpose(restart, 'attachmentRedownload', action => action.target === 'windows' && action.type === 'click');
   requirePurpose(restart, 'attachmentRestartHash', action => action.type === 'assertDownloadedAttachment' && action.phase === 'afterRestart');
+  requireOrderedPurposes('coldRestartVerify', restart, [
+    'reopenConversation',
+    'attachmentListedAfterRestart',
+    'attachmentRedownload',
+    'attachmentRestartHash'
+  ]);
 
   if (config.chaos?.enabled) {
     assert.ok(typeof config.chaos.expectedRouteNode === 'string' && config.chaos.expectedRouteNode.length > 0, 'chaos.expectedRouteNode is required');
+    assert.ok(Number.isInteger(config.chaos.healthTimeoutMs) && config.chaos.healthTimeoutMs >= 1_000 && config.chaos.healthTimeoutMs <= 120_000, 'chaos.healthTimeoutMs must be 1000-120000');
+    assert.ok(Number.isInteger(config.chaos.healthPollMs) && config.chaos.healthPollMs >= 100 && config.chaos.healthPollMs <= 5_000, 'chaos.healthPollMs must be 100-5000');
     validateAction(config.chaos.routeMarker, 'chaos.routeMarker');
     assert.equal(config.chaos.routeMarker.type, 'captureRouteMarker', 'chaos.routeMarker must capture an actual route marker');
-    assert.ok(Array.isArray(config.chaos.allowlistedServices) && config.chaos.allowlistedServices.length > 0, 'chaos allowlist is required');
-    for (const service of config.chaos.allowlistedServices) {
-      assert.ok(compose.services.includes(service), `chaos service '${service}' is not a compose service`);
+    assert.ok(Array.isArray(config.chaos.routeBindings) && config.chaos.routeBindings.length > 0, 'chaos routeNode-to-composeService bindings are required');
+    assert.equal(new Set(config.chaos.routeBindings.map(binding => binding.routeNode)).size, config.chaos.routeBindings.length, 'chaos routeNode bindings must be unique');
+    for (const binding of config.chaos.routeBindings) {
+      assert.ok(typeof binding.routeNode === 'string' && binding.routeNode.length > 0, 'chaos binding routeNode is required');
+      assert.ok(compose.services.includes(binding.composeService), `chaos binding service '${binding.composeService}' is not a compose service`);
     }
+    assert.equal(config.chaos.routeBindings.filter(binding => binding.routeNode === config.chaos.expectedRouteNode).length, 1, 'expected route node must have exactly one compose service binding');
     assert.ok(Array.isArray(config.chaos.actions) && config.chaos.actions.length > 0, 'enabled chaos needs actions');
     for (const action of config.chaos.actions) {
       assert.equal(action.type, 'restartComposeService', 'only restartComposeService is allowlisted');
       assert.equal(action.routeRef, '{{observedRouteNode}}', 'chaos action must reference captured route');
-      assert.equal(action.routeNode, config.chaos.expectedRouteNode, 'chaos action route must exactly match expected route node');
-      assert.ok(config.chaos.allowlistedServices.includes(action.service), `chaos service '${action.service}' is not allowlisted`);
+      assert.equal(Object.hasOwn(action, 'service'), false, 'chaos action service must be derived from the route binding');
+      assert.equal(Object.hasOwn(action, 'routeNode'), false, 'chaos action route must use the captured route reference');
     }
   }
   return config;
@@ -269,6 +337,20 @@ async function endpointProbe(pin, fetchImpl) {
   const body = await response.text();
   assert.ok(body.includes(pin.bodyIncludes), `Endpoint pin ${pin.service} response lacks required body marker`);
   return { service: pin.service, status: response.status, urlSha256: sha256(pin.url), bodySha256: sha256(body) };
+}
+
+async function waitForEndpointPin(pin, fetchImpl, timeoutMs, pollMs, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms))) {
+  const attempts = Math.ceil(timeoutMs / pollMs) + 1;
+  let latestError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await endpointProbe(pin, fetchImpl);
+    } catch (error) {
+      latestError = error;
+      if (attempt + 1 < attempts) await sleep(pollMs);
+    }
+  }
+  throw latestError;
 }
 
 function parseAaptBadging(stdout) {
@@ -345,7 +427,13 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
   const windowsBytes = await fs.readFile(config.windows.exePath);
   assertArm64WindowsExecutable(windowsBytes);
   await fs.access(config.attachmentPath);
-  const attachment = await fs.readFile(config.attachmentPath);
+  const attachmentLinkInfo = await fs.lstat(config.attachmentPath);
+  assert.equal(attachmentLinkInfo.isSymbolicLink(), false, 'attachment source cannot be a symlink/reparse point');
+  const canonicalAttachmentPath = await fs.realpath(config.attachmentPath);
+  assert.equal(canonicalAttachmentPath.toLowerCase(), resolve(config.attachmentPath).toLowerCase(), 'attachment source path is not canonical');
+  const attachmentInfo = await fs.stat(canonicalAttachmentPath);
+  assert.equal(attachmentInfo.isFile(), true, 'attachment source must be a regular file');
+  const attachment = await fs.readFile(canonicalAttachmentPath);
 
   const appDataParent = resolve(config.windows.appDataRoot);
   await fs.mkdir(appDataParent, { recursive: true });
@@ -383,7 +471,12 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
       isolatedAppData: runAppData,
       downloadRoot
     },
-    attachment: { path: config.attachmentPath, bytes: attachment.length, sha256: sha256(attachment) }
+    attachment: {
+      path: canonicalAttachmentPath,
+      bytes: attachment.length,
+      sha256: sha256(attachment),
+      sourceIdentity: { dev: attachmentInfo.dev, ino: attachmentInfo.ino }
+    }
   };
 }
 
@@ -452,7 +545,18 @@ async function waitForText(driver, selector, expected, fetchImpl, timeoutMs = 20
   assert.fail(`semantic element '${selector.value}' did not receive its correlated marker`);
 }
 
-export async function verifyDownloadedAttachment(path, downloadRoot, expectedSha256, fs = fsDefault, sourcePath) {
+async function assertTextAbsentForWindow(driver, selector, forbidden, fetchImpl, stabilityMs, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms))) {
+  const intervalMs = 200;
+  const polls = Math.max(2, Math.ceil(stabilityMs / intervalMs) + 1);
+  for (let poll = 0; poll < polls; poll += 1) {
+    const id = await findElement(driver, selector, fetchImpl);
+    const text = await readElementText(driver, id, fetchImpl);
+    assert.equal(text.includes(forbidden), false, 'invalid identity appeared during the contact-state stability window');
+    if (poll + 1 < polls) await sleep(intervalMs);
+  }
+}
+
+export async function verifyDownloadedAttachment(path, downloadRoot, expectedSha256, fs = fsDefault, sourceIdentity) {
   assert.ok(safeUnder(downloadRoot, path), 'decrypted destination escaped the unique download root');
   assert.equal(resolve(path), join(resolve(downloadRoot), basename(path)), 'decrypted destination must be a direct child of the unique download root');
   await assertCanonicalDirectory(downloadRoot, fs);
@@ -460,9 +564,13 @@ export async function verifyDownloadedAttachment(path, downloadRoot, expectedSha
   assert.equal(info.isSymbolicLink(), false, 'decrypted destination cannot be a symlink/reparse point');
   assert.equal(info.isFile(), true, 'decrypted destination must be a regular file');
   assert.equal((await fs.realpath(path)).toLowerCase(), resolve(path).toLowerCase(), 'decrypted destination canonical path mismatch');
-  if (sourcePath) {
-    const sourceInfo = await fs.lstat(sourcePath);
-    assert.equal(info.dev === sourceInfo.dev && info.ino === sourceInfo.ino, false, 'decrypted destination cannot be the source file or its hard link');
+  const followedInfo = await fs.stat(path);
+  if (sourceIdentity) {
+    assert.equal(
+      followedInfo.dev === sourceIdentity.dev && followedInfo.ino === sourceIdentity.ino,
+      false,
+      'decrypted destination cannot be the source referent or its hard link'
+    );
   }
   const actual = sha256(await fs.readFile(path));
   assert.equal(actual, expectedSha256, 'decrypted attachment SHA-256 differs from source');
@@ -480,7 +588,7 @@ async function waitForDownloadedAttachment(fileContext, expectedSha256, dependen
         fileContext.downloadRoot,
         expectedSha256,
         fs,
-        fileContext.sourcePath
+        fileContext.sourceIdentity
       );
     } catch (error) {
       const retryable = error?.code === 'ENOENT' || String(error?.message).includes('SHA-256 differs');
@@ -538,9 +646,15 @@ async function executeActions(drivers, actions, variables, evidence, dependencie
     } else if (definition.type === 'assertText') {
       const text = await readElementText(driver, id, fetchImpl);
       assert.ok(text.includes(interpolate(definition.contains, variables)), `semantic rejection evidence '${selector.value}' is missing`);
-    } else if (definition.type === 'assertNotText') {
-      const text = await readElementText(driver, id, fetchImpl);
-      assert.equal(text.includes(interpolate(definition.contains, variables)), false, 'invalid identity appeared in contact state');
+    } else if (definition.type === 'assertNotTextStable') {
+      await assertTextAbsentForWindow(
+        driver,
+        selector,
+        interpolate(definition.contains, variables),
+        fetchImpl,
+        definition.stabilityMs,
+        dependencies.sleep
+      );
     } else if (definition.type === 'captureIdentity') {
       const identity = (await readElementText(driver, id, fetchImpl)).trim();
       const pattern = definition.target === 'windows' ? variables.windowsIdentityPattern : variables.androidIdentityPattern;
@@ -558,16 +672,27 @@ async function executeActions(drivers, actions, variables, evidence, dependencie
   }
 }
 
-async function inspectWindowsProcess(command, config, process) {
+async function inspectWindowsProcess(command, config, process, dependencies) {
   assert.ok(Number.isInteger(process?.pid) && process.pid > 0, 'Windows launch did not return a PID');
   const script = `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${process.pid}";$g=Get-Process -Id ${process.pid};[pscustomobject]@{ProcessId=$p.ProcessId;Name=$p.Name;ExecutablePath=$p.ExecutablePath;MainWindowHandle=[int64]$g.MainWindowHandle}|ConvertTo-Json -Compress`;
-  const result = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
-  const metadata = JSON.parse(String(result.stdout));
-  assert.equal(Number(metadata.ProcessId), process.pid, 'Windows PID provenance mismatch');
-  assert.equal(String(metadata.Name).toLowerCase(), config.windows.processName.toLowerCase(), 'Windows process name mismatch');
-  assert.equal(resolve(metadata.ExecutablePath).toLowerCase(), resolve(config.windows.exePath).toLowerCase(), 'Windows executable provenance mismatch');
-  assert.ok(Number(metadata.MainWindowHandle) > 0, 'Windows process has no top-level window handle');
-  return { pid: process.pid, handle: Number(metadata.MainWindowHandle), executablePathSha256: sha256(resolve(metadata.ExecutablePath).toLowerCase()) };
+  const attempts = Math.ceil(config.windows.launchTimeoutMs / config.windows.launchPollMs) + 1;
+  const sleep = dependencies.sleep ?? (ms => new Promise(resolveWait => setTimeout(resolveWait, ms)));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+    const metadata = JSON.parse(String(result.stdout));
+    assert.equal(Number(metadata.ProcessId), process.pid, 'Windows PID provenance mismatch');
+    assert.equal(String(metadata.Name).toLowerCase(), config.windows.processName.toLowerCase(), 'Windows process name mismatch');
+    assert.equal(resolve(metadata.ExecutablePath).toLowerCase(), resolve(config.windows.exePath).toLowerCase(), 'Windows executable provenance mismatch');
+    if (Number(metadata.MainWindowHandle) > 0) {
+      return {
+        pid: process.pid,
+        handle: Number(metadata.MainWindowHandle),
+        executablePathSha256: sha256(resolve(metadata.ExecutablePath).toLowerCase())
+      };
+    }
+    if (attempt + 1 < attempts) await sleep(config.windows.launchPollMs);
+  }
+  assert.fail(`Windows process did not expose a top-level window within ${config.windows.launchTimeoutMs}ms`);
 }
 
 function sanitizedPreflight(preflightEvidence) {
@@ -609,6 +734,16 @@ async function cleanupStep(cleanup, name, action) {
     cleanup.steps.push({ name, succeeded: false });
     cleanup.succeeded = false;
   }
+}
+
+export async function assertPathAbsent(fs, path, context) {
+  try {
+    await fs.access(path);
+  } catch (error) {
+    assert.equal(error?.code, 'ENOENT', `${context} absence check failed with ${error?.code ?? 'unknown error'}`);
+    return;
+  }
+  assert.fail(`${context} still exists`);
 }
 
 export async function runPhysicalE2E(config, options = {}) {
@@ -678,7 +813,7 @@ export async function runPhysicalE2E(config, options = {}) {
       }
     });
     activeWindowsProcess = child;
-    const provenance = await inspectWindowsProcess(command, config, child);
+    const provenance = await inspectWindowsProcess(command, config, child, dependencies);
     if (phase === 'restart') assert.notEqual(provenance.pid, initialPid, 'cold restart reused the original Windows PID');
     if (phase === 'initial') initialPid = provenance.pid;
     evidence.processes.push({
@@ -736,7 +871,7 @@ export async function runPhysicalE2E(config, options = {}) {
       await executeActions(drivers, config.flows[name], variables, flowEvidence, dependencies, {
         downloadPath,
         downloadRoot: preflightEvidence.windows.downloadRoot,
-        sourcePath: preflightEvidence.attachment.path
+        sourceIdentity: preflightEvidence.attachment.sourceIdentity
       });
       evidence.flows.push(flowEvidence);
       evidence.files.push(...flowEvidence.files);
@@ -746,7 +881,7 @@ export async function runPhysicalE2E(config, options = {}) {
       }
       if (name === 'androidToWindowsAttachment') {
         await fs.unlink(downloadPath);
-        await assert.rejects(fs.access(downloadPath), 'initial decrypted download was not deleted');
+        await assertPathAbsent(fs, downloadPath, 'initial decrypted download');
         evidence.files.push({ phase: 'betweenRestarts', name: markers.attachmentName, deleted: true });
       }
     }
@@ -756,16 +891,38 @@ export async function runPhysicalE2E(config, options = {}) {
       await executeActions(drivers, [config.chaos.routeMarker], variables, routeEvidence, dependencies, {
         downloadPath,
         downloadRoot: preflightEvidence.windows.downloadRoot,
-        sourcePath: preflightEvidence.attachment.path
+        sourceIdentity: preflightEvidence.attachment.sourceIdentity
       });
       assert.equal(variables.observedRouteNode, config.chaos.expectedRouteNode, 'route correlation changed before chaos');
+      const binding = config.chaos.routeBindings.find(item => item.routeNode === variables.observedRouteNode);
+      assert.ok(binding, 'captured route node has no compose service binding');
+      const endpointPin = config.compose.endpointPins.find(pin => pin.service === binding.composeService);
+      assert.ok(endpointPin, 'bound compose service has no endpoint pin');
       const actions = [];
       for (const action of config.chaos.actions) {
         assert.equal(interpolate(action.routeRef, variables), variables.observedRouteNode, 'chaos action lost captured route correlation');
-        assert.equal(action.routeNode, variables.observedRouteNode, 'chaos action targets a different route');
-        assert.ok(config.chaos.allowlistedServices.includes(action.service), 'chaos action is not allowlisted');
-        await command('docker', ['compose', '-p', config.compose.project, '-f', config.compose.file, 'restart', action.service]);
-        actions.push({ type: action.type, service: action.service, routeNodeSha256: sha256(variables.observedRouteNode) });
+        await command('docker', [
+          'compose',
+          '-p',
+          config.compose.project,
+          '-f',
+          config.compose.file,
+          'restart',
+          binding.composeService
+        ]);
+        const health = await waitForEndpointPin(
+          endpointPin,
+          fetchImpl,
+          config.chaos.healthTimeoutMs,
+          config.chaos.healthPollMs,
+          dependencies.sleep
+        );
+        actions.push({
+          type: action.type,
+          service: binding.composeService,
+          routeNodeSha256: sha256(variables.observedRouteNode),
+          health
+        });
       }
       evidence.chaos = {
         executed: true,
@@ -803,7 +960,7 @@ export async function runPhysicalE2E(config, options = {}) {
     await cleanupStep(evidence.cleanup, 'isolated-appdata', async () => {
       assert.ok(safeUnder(config.windows.appDataRoot, preflightEvidence.windows.isolatedAppData), 'cleanup target escaped AppData root');
       await fs.rm(preflightEvidence.windows.isolatedAppData, { recursive: true, force: false });
-      await assert.rejects(fs.access(preflightEvidence.windows.isolatedAppData), 'isolated AppData still exists after cleanup');
+      await assertPathAbsent(fs, preflightEvidence.windows.isolatedAppData, 'isolated AppData');
     });
     if (!evidence.cleanup.succeeded) cleanupError = new Error('physical E2E cleanup did not complete');
     evidence.status = runSucceeded && evidence.cleanup.succeeded ? 'passed' : 'failed';
