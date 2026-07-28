@@ -40,7 +40,20 @@ const UI_ACTIONS = new Set([
   'captureRouteMarker',
   'assertDownloadedAttachment'
 ]);
-const fsDefault = { access, lstat, mkdir, readFile, realpath, rm, stat, unlink, writeFile };
+const WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
+
+// The adapter is injectable through `fs.isReparsePoint` for portable hosts and
+// test doubles. Node exposes a native reparse predicate in some runtimes and
+// the Windows attribute in others; callers can provide the same adapter when
+// their host exposes neither representation.
+export async function isWindowsReparsePoint(_path, info) {
+  return Boolean(
+    info?.isReparsePoint?.() ||
+    (Number(info?.attributes) & WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT) !== 0
+  );
+}
+
+const fsDefault = { access, isReparsePoint: isWindowsReparsePoint, lstat, mkdir, readFile, realpath, rm, stat, unlink, writeFile };
 
 export function createMarkers(runId = randomUUID()) {
   assert.match(runId, /^[A-Za-z0-9][A-Za-z0-9-]{3,79}$/, 'runId must be a safe 4-80 character identifier');
@@ -69,10 +82,10 @@ function normalizeEndpointUrl(value) {
   assert.ok(['http:', 'https:'].includes(url.protocol), 'endpoint pin must use HTTP(S)');
   assert.equal(url.username, '', 'endpoint pin cannot contain credentials');
   assert.equal(url.password, '', 'endpoint pin cannot contain credentials');
-  url.hash = '';
+  assert.equal(url.search, '', 'endpoint pin cannot contain a query string');
+  assert.equal(url.hash, '', 'endpoint pin cannot contain a fragment');
   if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, '');
-  url.searchParams.sort();
-  return url.href;
+  return `${url.origin}${url.pathname}`;
 }
 
 export function assertArm64WindowsExecutable(bytes) {
@@ -186,8 +199,7 @@ export function validateConfig(config) {
     assert.equal(normalizedEndpointUrls.has(normalizedUrl), false, `endpoint pin '${service}' reuses another service URL`);
     normalizedEndpointUrls.add(normalizedUrl);
     assert.equal(pin.expectedStatus, 200, `endpoint pin '${service}' must require HTTP 200`);
-    assert.ok(typeof pin.bodyIncludes === 'string' && pin.bodyIncludes.length > 0, `endpoint pin '${service}' needs an exact successful body marker`);
-    assert.ok(pin.bodyIncludes.toLowerCase().includes(service.toLowerCase()), `endpoint pin '${service}' body marker must be service-specific`);
+    assert.equal(Object.hasOwn(pin, 'bodyIncludes'), false, `endpoint pin '${service}' must not use a substring body marker`);
   }
 
   const android = required(config.android, 'android configuration is required');
@@ -330,27 +342,73 @@ async function defaultCommand(command, args, options = {}) {
   return { stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
-async function endpointProbe(pin, fetchImpl) {
-  const response = await fetchImpl(pin.url, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
-  assert.equal(response.ok, true, `Endpoint pin ${pin.service} did not return success`);
-  assert.equal(response.status, 200, `Endpoint pin ${pin.service} did not return HTTP 200`);
-  const body = await response.text();
-  assert.ok(body.includes(pin.bodyIncludes), `Endpoint pin ${pin.service} response lacks required body marker`);
-  return { service: pin.service, status: response.status, urlSha256: sha256(pin.url), bodySha256: sha256(body) };
+function now(dependencies = {}) {
+  return (dependencies.now ?? Date.now)();
 }
 
-async function waitForEndpointPin(pin, fetchImpl, timeoutMs, pollMs, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms))) {
-  const attempts = Math.ceil(timeoutMs / pollMs) + 1;
+async function beforeDeadline(work, deadline, label, dependencies = {}) {
+  const remaining = deadline - now(dependencies);
+  assert.ok(remaining > 0, `${label} exceeded its deadline`);
+  let timer;
+  try {
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} exceeded its deadline`)), remaining);
+    });
+    const result = await Promise.race([work(remaining), timeout]);
+    assert.ok(now(dependencies) < deadline, `${label} completed after its deadline`);
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function endpointProbe(pin, fetchImpl, deadline = now() + 10_000, dependencies = {}) {
+  const startedAt = now(dependencies);
+  const response = await beforeDeadline(
+    remaining => fetchImpl(pin.url, { redirect: 'error', signal: AbortSignal.timeout(remaining) }),
+    deadline,
+    `Endpoint pin ${pin.service} fetch`,
+    dependencies
+  );
+  assert.equal(response.ok, true, `Endpoint pin ${pin.service} did not return success`);
+  assert.equal(response.status, 200, `Endpoint pin ${pin.service} did not return HTTP 200`);
+  const body = await beforeDeadline(
+    () => response.json(),
+    deadline,
+    `Endpoint pin ${pin.service} body`,
+    dependencies
+  ).catch(error => {
+    if (String(error?.message).includes('deadline')) throw error;
+    assert.fail(`Endpoint pin ${pin.service} response must be JSON`);
+  });
+  assert.ok(body && typeof body === 'object' && !Array.isArray(body), `Endpoint pin ${pin.service} response must be a JSON object`);
+  assert.equal(body.service, pin.service, `Endpoint pin ${pin.service} response service provenance mismatch`);
+  return {
+    service: pin.service,
+    status: response.status,
+    urlSha256: sha256(normalizeEndpointUrl(pin.url)),
+    bodySha256: sha256(JSON.stringify(body)),
+    elapsedMs: now(dependencies) - startedAt
+  };
+}
+
+export async function waitForEndpointPin(pin, fetchImpl, timeoutMs, pollMs, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms)), dependencies = {}) {
+  const startedAt = now(dependencies);
+  const deadline = startedAt + timeoutMs;
   let latestError;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  while (now(dependencies) < deadline) {
     try {
-      return await endpointProbe(pin, fetchImpl);
+      const result = await endpointProbe(pin, fetchImpl, deadline, dependencies);
+      assert.ok(now(dependencies) < deadline, `Endpoint pin ${pin.service} completed after its deadline`);
+      return { ...result, elapsedMs: now(dependencies) - startedAt };
     } catch (error) {
       latestError = error;
-      if (attempt + 1 < attempts) await sleep(pollMs);
+      const remaining = deadline - now(dependencies);
+      if (remaining <= 0) break;
+      await sleep(Math.min(pollMs, remaining));
     }
   }
-  throw latestError;
+  throw latestError ?? new Error(`Endpoint pin ${pin.service} exceeded its deadline`);
 }
 
 function parseAaptBadging(stdout) {
@@ -383,9 +441,15 @@ function safeUnder(root, candidate) {
   return rel.length > 0 && !rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel);
 }
 
+async function assertNotReparsePoint(path, info, fs, context) {
+  assert.equal(info.isSymbolicLink(), false, `${context} cannot be a symlink/reparse point`);
+  const check = fs.isReparsePoint ?? isWindowsReparsePoint;
+  assert.equal(await check(path, info), false, `${context} cannot have the Windows ReparsePoint attribute`);
+}
+
 async function assertCanonicalDirectory(path, fs) {
   const info = await fs.lstat(path);
-  assert.equal(info.isSymbolicLink(), false, `reparse/symlink directory is forbidden: ${basename(path)}`);
+  await assertNotReparsePoint(path, info, fs, `directory '${basename(path)}'`);
   assert.equal((await fs.realpath(path)).toLowerCase(), resolve(path).toLowerCase(), `directory is redirected outside its canonical path: ${basename(path)}`);
 }
 
@@ -428,7 +492,7 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
   assertArm64WindowsExecutable(windowsBytes);
   await fs.access(config.attachmentPath);
   const attachmentLinkInfo = await fs.lstat(config.attachmentPath);
-  assert.equal(attachmentLinkInfo.isSymbolicLink(), false, 'attachment source cannot be a symlink/reparse point');
+  await assertNotReparsePoint(config.attachmentPath, attachmentLinkInfo, fs, 'attachment source');
   const canonicalAttachmentPath = await fs.realpath(config.attachmentPath);
   assert.equal(canonicalAttachmentPath.toLowerCase(), resolve(config.attachmentPath).toLowerCase(), 'attachment source path is not canonical');
   const attachmentInfo = await fs.stat(canonicalAttachmentPath);
@@ -561,7 +625,7 @@ export async function verifyDownloadedAttachment(path, downloadRoot, expectedSha
   assert.equal(resolve(path), join(resolve(downloadRoot), basename(path)), 'decrypted destination must be a direct child of the unique download root');
   await assertCanonicalDirectory(downloadRoot, fs);
   const info = await fs.lstat(path);
-  assert.equal(info.isSymbolicLink(), false, 'decrypted destination cannot be a symlink/reparse point');
+  await assertNotReparsePoint(path, info, fs, 'decrypted destination');
   assert.equal(info.isFile(), true, 'decrypted destination must be a regular file');
   assert.equal((await fs.realpath(path)).toLowerCase(), resolve(path).toLowerCase(), 'decrypted destination canonical path mismatch');
   const followedInfo = await fs.stat(path);
@@ -672,27 +736,49 @@ async function executeActions(drivers, actions, variables, evidence, dependencie
   }
 }
 
-async function inspectWindowsProcess(command, config, process, dependencies) {
+function isTransientWindowsProcessError(error) {
+  const message = `${error?.message ?? ''}\n${error?.stderr ?? ''}`.toLowerCase();
+  return /cannot find (a )?process|process (?:was )?not found|no process with (?:the )?(?:process )?identifier|process id .* does not exist/.test(message);
+}
+
+export async function inspectWindowsProcess(command, config, process, dependencies = {}) {
   assert.ok(Number.isInteger(process?.pid) && process.pid > 0, 'Windows launch did not return a PID');
   const script = `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${process.pid}";$g=Get-Process -Id ${process.pid};[pscustomobject]@{ProcessId=$p.ProcessId;Name=$p.Name;ExecutablePath=$p.ExecutablePath;MainWindowHandle=[int64]$g.MainWindowHandle}|ConvertTo-Json -Compress`;
-  const attempts = Math.ceil(config.windows.launchTimeoutMs / config.windows.launchPollMs) + 1;
+  const startedAt = now(dependencies);
+  const deadline = startedAt + config.windows.launchTimeoutMs;
   const sleep = dependencies.sleep ?? (ms => new Promise(resolveWait => setTimeout(resolveWait, ms)));
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const result = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
-    const metadata = JSON.parse(String(result.stdout));
-    assert.equal(Number(metadata.ProcessId), process.pid, 'Windows PID provenance mismatch');
-    assert.equal(String(metadata.Name).toLowerCase(), config.windows.processName.toLowerCase(), 'Windows process name mismatch');
-    assert.equal(resolve(metadata.ExecutablePath).toLowerCase(), resolve(config.windows.exePath).toLowerCase(), 'Windows executable provenance mismatch');
-    if (Number(metadata.MainWindowHandle) > 0) {
-      return {
-        pid: process.pid,
-        handle: Number(metadata.MainWindowHandle),
-        executablePathSha256: sha256(resolve(metadata.ExecutablePath).toLowerCase())
-      };
+  let latestError;
+  while (now(dependencies) < deadline) {
+    try {
+      const result = await beforeDeadline(
+        remaining => command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: remaining }),
+        deadline,
+        'Windows process inspection',
+        dependencies
+      );
+      const metadata = JSON.parse(String(result.stdout));
+      assert.equal(Number(metadata.ProcessId), process.pid, 'Windows PID provenance mismatch');
+      assert.equal(String(metadata.Name).toLowerCase(), config.windows.processName.toLowerCase(), 'Windows process name mismatch');
+      assert.equal(resolve(metadata.ExecutablePath).toLowerCase(), resolve(config.windows.exePath).toLowerCase(), 'Windows executable provenance mismatch');
+      if (Number(metadata.MainWindowHandle) > 0) {
+        assert.ok(now(dependencies) < deadline, 'Windows process inspection completed after its deadline');
+        return {
+          pid: process.pid,
+          handle: Number(metadata.MainWindowHandle),
+          executablePathSha256: sha256(resolve(metadata.ExecutablePath).toLowerCase()),
+          elapsedMs: now(dependencies) - startedAt
+        };
+      }
+      latestError = new Error('Windows process has no top-level window yet');
+    } catch (error) {
+      if (!isTransientWindowsProcessError(error)) throw error;
+      latestError = error;
     }
-    if (attempt + 1 < attempts) await sleep(config.windows.launchPollMs);
+    const remaining = deadline - now(dependencies);
+    if (remaining <= 0) break;
+    await sleep(Math.min(config.windows.launchPollMs, remaining));
   }
-  assert.fail(`Windows process did not expose a top-level window within ${config.windows.launchTimeoutMs}ms`);
+  assert.fail(`Windows process did not expose a top-level window within ${config.windows.launchTimeoutMs}ms${latestError ? `: ${latestError.message}` : ''}`);
 }
 
 function sanitizedPreflight(preflightEvidence) {
@@ -820,7 +906,8 @@ export async function runPhysicalE2E(config, options = {}) {
       phase,
       pid: provenance.pid,
       executablePathSha256: provenance.executablePathSha256,
-      handleSha256: sha256(String(provenance.handle))
+      handleSha256: sha256(String(provenance.handle)),
+      elapsedMs: provenance.elapsedMs
     });
     return provenance;
   };
@@ -915,7 +1002,8 @@ export async function runPhysicalE2E(config, options = {}) {
           fetchImpl,
           config.chaos.healthTimeoutMs,
           config.chaos.healthPollMs,
-          dependencies.sleep
+          dependencies.sleep,
+          dependencies
         );
         actions.push({
           type: action.type,

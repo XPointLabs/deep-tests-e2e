@@ -5,11 +5,11 @@
     "project": "deep-physical-e2e",
     "services": ["router", "registry", "storage", "file", "push"],
     "endpointPins": [
-      { "service": "router", "url": "http://127.0.0.1:18081/health/ready", "expectedStatus": 200, "bodyIncludes": "\"service\":\"router\"" },
-      { "service": "registry", "url": "http://127.0.0.1:18080/health/ready", "expectedStatus": 200, "bodyIncludes": "\"service\":\"registry\"" },
-      { "service": "storage", "url": "http://127.0.0.1:18100/health/ready", "expectedStatus": 200, "bodyIncludes": "\"service\":\"storage\"" },
-      { "service": "file", "url": "http://127.0.0.1:18101/health/ready", "expectedStatus": 200, "bodyIncludes": "\"service\":\"file\"" },
-      { "service": "push", "url": "http://127.0.0.1:18102/health/ready", "expectedStatus": 200, "bodyIncludes": "\"service\":\"push\"" }
+      { "service": "router", "url": "http://127.0.0.1:18081/health/ready", "expectedStatus": 200 },
+      { "service": "registry", "url": "http://127.0.0.1:18080/health/ready", "expectedStatus": 200 },
+      { "service": "storage", "url": "http://127.0.0.1:18100/health/ready", "expectedStatus": 200 },
+      { "service": "file", "url": "http://127.0.0.1:18101/health/ready", "expectedStatus": 200 },
+      { "service": "push", "url": "http://127.0.0.1:18102/health/ready", "expectedStatus": 200 }
     ]
   },
   "android": {

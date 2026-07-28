@@ -10,13 +10,16 @@ import {
   assertArm64WindowsExecutable,
   assertPathAbsent,
   createMarkers,
+  endpointProbe,
+  inspectWindowsProcess,
   interpolate,
   parseComposePs,
   preflight,
   runPhysicalE2E,
   sha256,
   validateConfig,
-  verifyDownloadedAttachment
+  verifyDownloadedAttachment,
+  waitForEndpointPin
 } from '../../src/physical-e2e.mjs';
 
 const signerBytes = Buffer.alloc(48, 0xab);
@@ -203,9 +206,21 @@ test('config mutation gates reject coordinates, weak endpoints, incomplete negat
   relabeled.compose.endpointPins[1].bodyIncludes = '"service":"registry"';
   assert.throws(() => validateConfig(relabeled), /reuses another service URL/);
 
-  const genericMarker = structuredClone(example);
-  genericMarker.compose.endpointPins[0].bodyIncludes = '"ok":true';
-  assert.throws(() => validateConfig(genericMarker), /service-specific/);
+  const legacyMarker = structuredClone(example);
+  legacyMarker.compose.endpointPins[0].bodyIncludes = '"service":"router"';
+  assert.throws(() => validateConfig(legacyMarker), /must not use a substring body marker/);
+
+  const queryProvenance = structuredClone(example);
+  queryProvenance.compose.endpointPins[0].url += '?service=registry';
+  assert.throws(() => validateConfig(queryProvenance), /cannot contain a query string/);
+
+  const fragmentProvenance = structuredClone(example);
+  fragmentProvenance.compose.endpointPins[0].url += '#registry';
+  assert.throws(() => validateConfig(fragmentProvenance), /cannot contain a fragment/);
+
+  const userinfoProvenance = structuredClone(example);
+  userinfoProvenance.compose.endpointPins[0].url = 'http://registry@127.0.0.1:18081/health/ready';
+  assert.throws(() => validateConfig(userinfoProvenance), /cannot contain credentials/);
 
   const status = structuredClone(example);
   status.compose.endpointPins[0].expectedStatus = 204;
@@ -292,6 +307,86 @@ test('download verifier rejects a source/outside path and reparse file', async (
     /symlink\/reparse/
   );
   await rm(root, { recursive: true, force: true });
+});
+
+test('Windows ReparsePoint attribute adapter rejects source, destination, and managed directories', async () => {
+  const source = await localConfig('deep-source-reparse-');
+  await assert.rejects(preflight(source.config, {
+    command: commandMock(source.config, []),
+    fetch: endpointFetch(source.config),
+    fs: { ...fsPromises, isReparsePoint: async path => path === source.config.attachmentPath }
+  }, 'source-attribute-run'), /attachment source cannot have the Windows ReparsePoint attribute/);
+  await rm(source.root, { recursive: true, force: true });
+
+  const directory = await localConfig('deep-directory-reparse-');
+  await assert.rejects(preflight(directory.config, {
+    command: commandMock(directory.config, []),
+    fetch: endpointFetch(directory.config),
+    fs: { ...fsPromises, isReparsePoint: async path => path === directory.config.windows.appDataRoot }
+  }, 'directory-attribute-run'), /directory 'appdata' cannot have the Windows ReparsePoint attribute/);
+  await rm(directory.root, { recursive: true, force: true });
+
+  const destinationFs = {
+    lstat: async () => ({ isSymbolicLink: () => false, isFile: () => true, size: 7 }),
+    isReparsePoint: async path => path.endsWith('file.bin'),
+    realpath: async path => path,
+    readFile: async () => Buffer.from('fixture')
+  };
+  await assert.rejects(
+    verifyDownloadedAttachment('C:\\isolated\\Downloads\\file.bin', 'C:\\isolated\\Downloads', sha256('fixture'), destinationFs),
+    /decrypted destination cannot have the Windows ReparsePoint attribute/
+  );
+});
+
+test('health provenance requires an exact JSON service identity', async () => {
+  const pin = structuredClone(example.compose.endpointPins.find(item => item.service === 'file'));
+  await assert.rejects(
+    endpointProbe(pin, async () => Response.json({ ok: true, service: 'profile' })),
+    /service provenance mismatch/
+  );
+});
+
+test('endpoint re-health uses one wall-clock deadline and records elapsed evidence', async () => {
+  const pin = structuredClone(example.compose.endpointPins[0]);
+  await assert.rejects(
+    waitForEndpointPin(pin, async () => {
+      await new Promise(resolve => setTimeout(resolve, 35));
+      return Response.json({ service: pin.service });
+    }, 10, 1),
+    /deadline/
+  );
+  const health = await waitForEndpointPin(pin, async () => Response.json({ service: pin.service }), 100, 1);
+  assert.equal(health.service, pin.service);
+  assert.ok(Number.isInteger(health.elapsedMs) && health.elapsedMs >= 0);
+});
+
+test('Windows process inspection bounds PowerShell by its remaining deadline and retries transient readiness', async () => {
+  const config = structuredClone(example);
+  config.windows.launchTimeoutMs = 10;
+  config.windows.launchPollMs = 1;
+  await assert.rejects(
+    inspectWindowsProcess(async (_file, _args, options) => {
+      assert.ok(options.timeout <= config.windows.launchTimeoutMs);
+      await new Promise(resolve => setTimeout(resolve, 35));
+      return { stdout: JSON.stringify({ ProcessId: 91, Name: config.windows.processName, ExecutablePath: config.windows.exePath, MainWindowHandle: 1 }) };
+    }, config, { pid: 91 }),
+    /deadline/
+  );
+
+  let attempts = 0;
+  const provenance = await inspectWindowsProcess(async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('Get-Process: Cannot find a process with the process identifier 92.');
+    return { stdout: JSON.stringify({
+      ProcessId: 92,
+      Name: config.windows.processName,
+      ExecutablePath: config.windows.exePath,
+      MainWindowHandle: attempts === 2 ? 0 : 123
+    }) };
+  }, { ...config, windows: { ...config.windows, launchTimeoutMs: 100 } }, { pid: 92 }, { sleep: async () => {} });
+  assert.equal(provenance.pid, 92);
+  assert.ok(provenance.elapsedMs >= 0);
+  assert.equal(attempts, 3);
 });
 
 test('deletion proof accepts ENOENT only', async () => {
