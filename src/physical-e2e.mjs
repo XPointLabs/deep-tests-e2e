@@ -42,15 +42,25 @@ const UI_ACTIONS = new Set([
 ]);
 const WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
 
-// The adapter is injectable through `fs.isReparsePoint` for portable hosts and
-// test doubles. Node exposes a native reparse predicate in some runtimes and
-// the Windows attribute in others; callers can provide the same adapter when
-// their host exposes neither representation.
-export async function isWindowsReparsePoint(_path, info) {
-  return Boolean(
-    info?.isReparsePoint?.() ||
-    (Number(info?.attributes) & WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT) !== 0
-  );
+// Node's Windows Stats omits FileAttributes, so the production adapter queries
+// the attribute through .NET. Tests and non-Windows hosts can inject the same
+// `(path, lstatResult) => boolean` contract through `fs.isReparsePoint`.
+export async function isWindowsReparsePoint(path, _info, options = {}) {
+  assert.ok(process.platform === 'win32' || options.command, 'Windows ReparsePoint inspection requires Windows or an injected adapter');
+  assert.equal(isAbsolute(path), true, 'Windows ReparsePoint inspection requires an absolute path');
+  const absolutePath = resolve(path);
+  const escapedPath = absolutePath.replaceAll("'", "''");
+  const script = `$ErrorActionPreference='Stop';[int][IO.File]::GetAttributes('${escapedPath}')`;
+  const command = options.command ?? defaultCommand;
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  assert.ok(Number.isInteger(timeoutMs) && timeoutMs > 0, 'Windows ReparsePoint inspection timeout must be positive');
+  const result = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: timeoutMs });
+  assert.equal(String(result.stderr ?? '').trim(), '', 'Windows ReparsePoint inspection wrote to stderr');
+  const output = String(result.stdout).trim();
+  assert.match(output, /^\d+$/, 'Windows ReparsePoint inspection returned invalid attributes');
+  const attributes = Number(output);
+  assert.ok(Number.isSafeInteger(attributes), 'Windows ReparsePoint inspection returned unsafe attributes');
+  return (attributes & WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT) !== 0;
 }
 
 const fsDefault = { access, isReparsePoint: isWindowsReparsePoint, lstat, mkdir, readFile, realpath, rm, stat, unlink, writeFile };
@@ -743,7 +753,7 @@ function isTransientWindowsProcessError(error) {
 
 export async function inspectWindowsProcess(command, config, process, dependencies = {}) {
   assert.ok(Number.isInteger(process?.pid) && process.pid > 0, 'Windows launch did not return a PID');
-  const script = `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${process.pid}";$g=Get-Process -Id ${process.pid};[pscustomobject]@{ProcessId=$p.ProcessId;Name=$p.Name;ExecutablePath=$p.ExecutablePath;MainWindowHandle=[int64]$g.MainWindowHandle}|ConvertTo-Json -Compress`;
+  const script = `$ErrorActionPreference='Stop';$p=Get-CimInstance Win32_Process -Filter "ProcessId=${process.pid}";$g=Get-Process -Id ${process.pid};[pscustomobject]@{ProcessId=$p.ProcessId;Name=$p.Name;ExecutablePath=$p.ExecutablePath;MainWindowHandle=[int64]$g.MainWindowHandle}|ConvertTo-Json -Compress`;
   const startedAt = now(dependencies);
   const deadline = startedAt + config.windows.launchTimeoutMs;
   const sleep = dependencies.sleep ?? (ms => new Promise(resolveWait => setTimeout(resolveWait, ms)));
@@ -756,20 +766,34 @@ export async function inspectWindowsProcess(command, config, process, dependenci
         'Windows process inspection',
         dependencies
       );
-      const metadata = JSON.parse(String(result.stdout));
-      assert.equal(Number(metadata.ProcessId), process.pid, 'Windows PID provenance mismatch');
-      assert.equal(String(metadata.Name).toLowerCase(), config.windows.processName.toLowerCase(), 'Windows process name mismatch');
-      assert.equal(resolve(metadata.ExecutablePath).toLowerCase(), resolve(config.windows.exePath).toLowerCase(), 'Windows executable provenance mismatch');
-      if (Number(metadata.MainWindowHandle) > 0) {
-        assert.ok(now(dependencies) < deadline, 'Windows process inspection completed after its deadline');
-        return {
-          pid: process.pid,
-          handle: Number(metadata.MainWindowHandle),
-          executablePathSha256: sha256(resolve(metadata.ExecutablePath).toLowerCase()),
-          elapsedMs: now(dependencies) - startedAt
-        };
+      const stderr = String(result.stderr ?? '').trim();
+      if (stderr) {
+        const stderrError = new Error(stderr);
+        if (isTransientWindowsProcessError(stderrError)) {
+          latestError = stderrError;
+        } else {
+          throw stderrError;
+        }
+      } else {
+        const metadata = JSON.parse(String(result.stdout));
+        if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata) || metadata.ProcessId === null || metadata.ProcessId === undefined) {
+          latestError = new Error('Windows process metadata is not available yet');
+        } else {
+          assert.equal(Number(metadata.ProcessId), process.pid, 'Windows PID provenance mismatch');
+          assert.equal(String(metadata.Name).toLowerCase(), config.windows.processName.toLowerCase(), 'Windows process name mismatch');
+          assert.equal(resolve(metadata.ExecutablePath).toLowerCase(), resolve(config.windows.exePath).toLowerCase(), 'Windows executable provenance mismatch');
+          if (Number(metadata.MainWindowHandle) > 0) {
+            assert.ok(now(dependencies) < deadline, 'Windows process inspection completed after its deadline');
+            return {
+              pid: process.pid,
+              handle: Number(metadata.MainWindowHandle),
+              executablePathSha256: sha256(resolve(metadata.ExecutablePath).toLowerCase()),
+              elapsedMs: now(dependencies) - startedAt
+            };
+          }
+          latestError = new Error('Windows process has no top-level window yet');
+        }
       }
-      latestError = new Error('Windows process has no top-level window yet');
     } catch (error) {
       if (!isTransientWindowsProcessError(error)) throw error;
       latestError = error;

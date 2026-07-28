@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import * as fsPromises from 'node:fs/promises';
-import { link, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,7 @@ import {
   endpointProbe,
   inspectWindowsProcess,
   interpolate,
+  isWindowsReparsePoint,
   parseComposePs,
   preflight,
   runPhysicalE2E,
@@ -25,6 +26,7 @@ import {
 const signerBytes = Buffer.alloc(48, 0xab);
 const signerHex = signerBytes.toString('hex');
 const signerSha256 = sha256(signerBytes);
+const regularFs = { ...fsPromises, isReparsePoint: async () => false };
 
 function arm64Pe() {
   const bytes = Buffer.alloc(128);
@@ -164,6 +166,7 @@ async function harness(runId = 'review-run-0001') {
   const dependencies = {
     command: commandMock(local.config, commandLog, pids),
     fetch: webdriverFetch(local.config, runId, webdriverLog, downloadWrites),
+    fs: regularFs,
     spawn: () => ({ pid: pids.shift() }),
     sleep: async () => {}
   };
@@ -190,6 +193,56 @@ test('Windows executable gate accepts only ARM64 PE', () => {
   assert.doesNotThrow(() => assertArm64WindowsExecutable(bytes));
   bytes.writeUInt16LE(0x8664, 68);
   assert.throws(() => assertArm64WindowsExecutable(bytes), /ARM64/);
+});
+
+test('default Windows ReparsePoint adapter uses a bounded exact FileAttributes query', async () => {
+  const path = join(tmpdir(), 'deep-reparse-adapter-unit');
+  let invocation;
+  const detected = await isWindowsReparsePoint(path, undefined, {
+    timeoutMs: 1234,
+    command: async (file, args, options) => {
+      invocation = { file, args, options };
+      return { stdout: '1024\r\n', stderr: '' };
+    }
+  });
+  assert.equal(detected, true);
+  assert.equal(invocation.file, 'powershell.exe');
+  assert.equal(invocation.options.timeout, 1234);
+  assert.match(invocation.args.at(-1), /^\$ErrorActionPreference='Stop';\[int\]\[IO\.File\]::GetAttributes\('/);
+  await assert.rejects(
+    isWindowsReparsePoint(path, undefined, { command: async () => ({ stdout: 'True and maybe', stderr: '' }) }),
+    /invalid attributes/
+  );
+  await assert.rejects(
+    isWindowsReparsePoint(path, undefined, { command: async () => { throw new Error('timed out'); } }),
+    /timed out/
+  );
+});
+
+test('default Windows ReparsePoint adapter detects a real junction', async t => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows-only junction integration');
+    return;
+  }
+  const root = await mkdtemp(join(tmpdir(), 'deep-reparse-integration-'));
+  const target = join(root, 'target');
+  const junction = join(root, 'junction');
+  await mkdir(target);
+  try {
+    await symlink(target, junction, 'junction');
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error?.code)) {
+      t.skip(`junction creation unavailable: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+  try {
+    assert.equal(await isWindowsReparsePoint(junction, await lstat(junction)), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('config mutation gates reject coordinates, weak endpoints, incomplete negative flow, and uncorrelated chaos', () => {
@@ -291,7 +344,7 @@ test('download verifier rejects a source/outside path and reparse file', async (
   await link(outside, hardLink);
   const sourceIdentity = await stat(outside);
   await assert.rejects(
-    verifyDownloadedAttachment(hardLink, downloadRoot, sha256('fixture'), undefined, sourceIdentity),
+    verifyDownloadedAttachment(hardLink, downloadRoot, sha256('fixture'), regularFs, sourceIdentity),
     /hard link/
   );
 
@@ -365,8 +418,9 @@ test('Windows process inspection bounds PowerShell by its remaining deadline and
   config.windows.launchTimeoutMs = 10;
   config.windows.launchPollMs = 1;
   await assert.rejects(
-    inspectWindowsProcess(async (_file, _args, options) => {
+    inspectWindowsProcess(async (_file, args, options) => {
       assert.ok(options.timeout <= config.windows.launchTimeoutMs);
+      assert.match(args.at(-1), /^\$ErrorActionPreference='Stop';/);
       await new Promise(resolve => setTimeout(resolve, 35));
       return { stdout: JSON.stringify({ ProcessId: 91, Name: config.windows.processName, ExecutablePath: config.windows.exePath, MainWindowHandle: 1 }) };
     }, config, { pid: 91 }),
@@ -387,6 +441,48 @@ test('Windows process inspection bounds PowerShell by its remaining deadline and
   assert.equal(provenance.pid, 92);
   assert.ok(provenance.elapsedMs >= 0);
   assert.equal(attempts, 3);
+
+  let nullAttempts = 0;
+  const afterNull = await inspectWindowsProcess(async () => {
+    nullAttempts += 1;
+    if (nullAttempts === 1) {
+      return { stdout: JSON.stringify({ ProcessId: null, Name: null, ExecutablePath: null, MainWindowHandle: 0 }), stderr: '' };
+    }
+    return { stdout: JSON.stringify({
+      ProcessId: 93,
+      Name: config.windows.processName,
+      ExecutablePath: config.windows.exePath,
+      MainWindowHandle: 456
+    }), stderr: '' };
+  }, { ...config, windows: { ...config.windows, launchTimeoutMs: 100 } }, { pid: 93 }, { sleep: async () => {} });
+  assert.equal(afterNull.pid, 93);
+  assert.equal(nullAttempts, 2);
+
+  let stderrAttempts = 0;
+  const afterStderr = await inspectWindowsProcess(async () => {
+    stderrAttempts += 1;
+    if (stderrAttempts === 1) {
+      return { stdout: 'null', stderr: 'Get-Process: Cannot find a process with the process identifier 95.' };
+    }
+    return { stdout: JSON.stringify({
+      ProcessId: 95,
+      Name: config.windows.processName,
+      ExecutablePath: config.windows.exePath,
+      MainWindowHandle: 789
+    }), stderr: '' };
+  }, { ...config, windows: { ...config.windows, launchTimeoutMs: 100 } }, { pid: 95 }, { sleep: async () => {} });
+  assert.equal(afterStderr.pid, 95);
+  assert.equal(stderrAttempts, 2);
+
+  await assert.rejects(
+    inspectWindowsProcess(async () => ({ stdout: JSON.stringify({
+      ProcessId: 999,
+      Name: config.windows.processName,
+      ExecutablePath: config.windows.exePath,
+      MainWindowHandle: 1
+    }), stderr: '' }), { ...config, windows: { ...config.windows, launchTimeoutMs: 100 } }, { pid: 94 }),
+    /PID provenance mismatch/
+  );
 });
 
 test('deletion proof accepts ENOENT only', async () => {
@@ -411,7 +507,8 @@ test('preflight binds APK version and signing identity to installed dumpsys', as
   const log = [];
   const result = await preflight(config, {
     command: commandMock(config, log),
-    fetch: endpointFetch(config)
+    fetch: endpointFetch(config),
+    fs: regularFs
   }, 'preflight-run');
   assert.equal(result.android.apk.signingSha256, signerSha256);
   assert.equal(result.android.apk.versionCode, result.android.installed.versionCode);
