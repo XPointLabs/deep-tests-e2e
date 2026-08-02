@@ -17,7 +17,7 @@ import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
 
-export const ANDROID_SERIAL = '192.168.1.45:36969';
+export const ANDROID_SERIAL = '192.168.1.45:43337';
 export const ANDROID_PACKAGE = 'network.xpoint.deep.e2e';
 export const REQUIRED_FLOWS = Object.freeze([
   'invalidIdentity',

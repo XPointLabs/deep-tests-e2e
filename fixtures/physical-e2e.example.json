@@ -13,7 +13,7 @@
     ]
   },
   "android": {
-    "serial": "192.168.1.45:36969",
+    "serial": "192.168.1.45:43337",
     "packageName": "network.xpoint.deep.e2e",
     "apkPath": "C:\\builds\\Deep.E2E.apk",
     "attachmentDirectory": "/sdcard/Download",

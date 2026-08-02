@@ -17,7 +17,7 @@ The clients are not opened until all of these checks pass:
   `healthy` container;
 - every service has exactly one normalized, unique HTTP 200 endpoint URL and a
   body marker containing that service identity;
-- ADB reports the exact serial `192.168.1.45:36969` as `device`;
+- ADB reports the exact serial `192.168.1.45:43337` as `device`;
 - package `network.xpoint.deep.e2e` is installed;
 - local `aapt` package/version metadata and `apksigner` certificate SHA-256
   match the installed `dumpsys package` version and signing certificate;
