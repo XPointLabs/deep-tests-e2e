@@ -12,27 +12,33 @@ import {
   unlink,
   writeFile
 } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
 
 export const ANDROID_SERIAL = '192.168.1.45:43337';
 export const ANDROID_PACKAGE = 'network.xpoint.deep.e2e';
+export const ANDROID_LAUNCH_ACTIVITY = 'network.xpoint.deep.DeepLauncher';
 export const REQUIRED_FLOWS = Object.freeze([
+  'bootstrapIdentity',
   'invalidIdentity',
   'mutualIdentity',
   'windowsToAndroidText',
   'androidToWindowsText',
   'androidToWindowsAttachment',
-  'coldRestartVerify'
+  'coldRestartVerify',
+  'manualResendAfterRestart',
+  'automaticRetryAfterRestart'
 ]);
 
 const SECRET_KEY = /(?:password|secret|token|api[_-]?key|authorization)/i;
 const SEMANTIC_LOCATORS = new Set(['accessibility id', 'id']);
 const UI_ACTIONS = new Set([
+  'waitVisible',
   'setValue',
   'click',
+  'clickText',
   'assertText',
   'waitText',
   'assertNotTextStable',
@@ -40,6 +46,28 @@ const UI_ACTIONS = new Set([
   'captureRouteMarker',
   'assertDownloadedAttachment'
 ]);
+const SYSTEM_ACTIONS = new Set([
+  'restartClients',
+  'stopObservedRoute',
+  'startObservedRoute'
+]);
+const PLATFORM_SELECTOR_ROLES = Object.freeze({
+  android: Object.freeze([
+    'pageConversations', 'conversationsRoot', 'profileSettings', 'newConversation',
+    'newMessage', 'ownIdentity', 'settingsBack', 'identityInput', 'aliasInput',
+    'identitySubmit', 'identityError', 'identityBack', 'conversationRow', 'chatBack',
+    'messageComposer', 'messageSend', 'messageBody', 'deliveryStatus', 'manualRetry',
+    'attachmentMenu', 'attachmentFile', 'pickerDownloads', 'pickerFile',
+    'stagedAttachmentFilename'
+  ]),
+  windows: Object.freeze([
+    'welcomeDisplayName', 'welcomeCreate', 'conversationsRoot', 'profileSettings',
+    'newConversation', 'newMessage', 'ownIdentity', 'settingsBack', 'identityInput',
+    'aliasInput', 'identitySubmit', 'identityError', 'identityBack', 'conversationRow',
+    'messageComposer', 'messageSend', 'messageBody', 'deliveryStatus', 'manualRetry',
+    'attachmentFilename', 'attachmentSave', 'routeNodeMarker'
+  ])
+});
 const WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
 
 // Node's Windows Stats omits FileAttributes, so the production adapter queries
@@ -70,11 +98,14 @@ export function createMarkers(runId = randomUUID()) {
   const compact = sha256(runId).slice(0, 20);
   return {
     runId,
+    bootstrapWindowsName: `deep-e2e-windows-${compact}`,
     invalidIdentity: `deep-e2e-invalid-${compact}`,
     contactMarkerWindows: `deep-e2e-contact-win-${compact}`,
     contactMarkerAndroid: `deep-e2e-contact-android-${compact}`,
     windowsToAndroidMessage: `deep-e2e W>A ${compact}`,
     androidToWindowsMessage: `deep-e2e A>W ${compact}`,
+    manualResendMessage: `deep-e2e manual-resend ${compact}`,
+    automaticRetryMessage: `deep-e2e automatic-retry ${compact}`,
     attachmentName: `deep-e2e-attachment-${compact}.bin`
   };
 }
@@ -146,24 +177,33 @@ function hasAction(actions, predicate) {
   return actions.some(predicate);
 }
 
-function validateSelector(action, name) {
+function validateSelector(action, name, selectors) {
   required(action.selector && typeof action.selector === 'object', `${name} needs a semantic selector`);
-  required(SEMANTIC_LOCATORS.has(action.selector.using), `${name} selector must use accessibility id or id, never coordinates`);
-  required(typeof action.selector.value === 'string' && action.selector.value.length > 0, `${name} selector value is required`);
+  assert.deepEqual(Object.keys(action.selector), ['role'], `${name} selector must reference one platform role`);
+  const role = required(action.selector.role, `${name} selector role is required`);
+  required(selectors[action.target]?.[role], `${name} references missing ${action.target} selector role '${role}'`);
 }
 
-function validateAction(action, name) {
+function validateAction(action, name, selectors) {
   required(action && typeof action === 'object', `${name} must be an action object`);
-  required(UI_ACTIONS.has(action.type), `${name} has unsupported action '${action.type}'`);
+  required(UI_ACTIONS.has(action.type) || SYSTEM_ACTIONS.has(action.type), `${name} has unsupported action '${action.type}'`);
+  if (SYSTEM_ACTIONS.has(action.type)) {
+    assert.equal(action.target, 'system', `${name} system action must target system`);
+    assert.equal(Object.hasOwn(action, 'selector'), false, `${name} system action cannot have a selector`);
+    return;
+  }
+  if (Object.hasOwn(action, 'timeoutMs')) {
+    assert.ok(Number.isInteger(action.timeoutMs) && action.timeoutMs >= 1_000 && action.timeoutMs <= 120_000, `${name} timeoutMs must be 1000-120000`);
+  }
   assert.ok(['android', 'windows'].includes(action.target), `${name} needs target android or windows`);
   if (action.type === 'assertDownloadedAttachment') {
     assert.equal(action.target, 'windows', `${name} decrypted attachment assertion must target Windows`);
     assert.ok(['initial', 'afterRestart'].includes(action.phase), `${name} needs initial or afterRestart phase`);
     return;
   }
-  validateSelector(action, name);
+  validateSelector(action, name, selectors);
   if (action.type === 'setValue') required(typeof action.value === 'string', `${name} setValue needs value`);
-  if (['assertText', 'waitText', 'assertNotTextStable'].includes(action.type)) {
+  if (['clickText', 'assertText', 'waitText', 'assertNotTextStable'].includes(action.type)) {
     required(typeof action.contains === 'string' && action.contains.length > 0, `${name} ${action.type} needs contains`);
   }
   if (action.type === 'assertNotTextStable') {
@@ -191,7 +231,7 @@ function requireOrderedPurposes(flowName, actions, purposes) {
 }
 
 export function validateConfig(config) {
-  assert.equal(config?.version, 2, 'physical E2E config.version must be 2');
+  assert.equal(config?.version, 3, 'physical E2E config.version must be 3');
   rejectSecrets(config);
 
   const compose = required(config.compose, 'compose configuration is required');
@@ -215,12 +255,13 @@ export function validateConfig(config) {
   const android = required(config.android, 'android configuration is required');
   assert.equal(android.serial, ANDROID_SERIAL, `android.serial must pin ${ANDROID_SERIAL}`);
   assert.equal(android.packageName, ANDROID_PACKAGE, `android.packageName must pin ${ANDROID_PACKAGE}`);
+  assert.equal(android.launchActivity, ANDROID_LAUNCH_ACTIVITY, `android.launchActivity must pin ${ANDROID_LAUNCH_ACTIVITY}`);
   assert.ok(typeof android.apkPath === 'string' && isAbsolute(android.apkPath), 'android.apkPath must be absolute');
   assert.match(android.attachmentDirectory, /^\/sdcard\/[A-Za-z0-9_./-]+$/, 'android.attachmentDirectory must be an absolute /sdcard path');
   assert.equal(android.attachmentDirectory.split('/').some(part => part === '.' || part === '..'), false, 'android.attachmentDirectory cannot traverse directories');
   assert.equal(android.driver?.capabilities?.alwaysMatch?.platformName, 'Android', 'Android driver platformName must be Android');
   assert.equal(android.driver.capabilities.alwaysMatch['appium:automationName'], 'UiAutomator2', 'Android driver must use UiAutomator2');
-  for (const managed of ['appium:app', 'appium:udid', 'appium:appPackage']) {
+  for (const managed of ['appium:app', 'appium:udid', 'appium:appPackage', 'appium:appActivity']) {
     assert.equal(Object.hasOwn(android.driver.capabilities.alwaysMatch, managed), false, `runner exclusively manages Android capability '${managed}'`);
   }
   required(android.driver.url, 'android.driver.url is required');
@@ -238,16 +279,51 @@ export function validateConfig(config) {
   }
   required(windows.driver.url, 'windows.driver.url is required');
   assert.equal(windows.identityPattern, '^05[0-9a-fA-F]{64}$', 'windows.identityPattern must enforce a full Deep identity');
+  assert.ok(typeof windows.downloadDirectory === 'string' && isAbsolute(windows.downloadDirectory), 'windows.downloadDirectory must be absolute');
+  assert.equal(basename(windows.downloadDirectory).toLowerCase(), 'deep', 'windows.downloadDirectory must be the production Downloads\\Deep directory');
+  assert.equal(basename(dirname(windows.downloadDirectory)).toLowerCase(), 'downloads', 'windows.downloadDirectory parent must be Downloads');
   assert.ok(typeof config.attachmentPath === 'string' && isAbsolute(config.attachmentPath), 'attachmentPath must be an absolute local fixture path');
 
+  const selectors = required(config.selectors, 'platform selector maps are required');
+  assert.deepEqual(Object.keys(selectors).sort(), ['android', 'windows'], 'selector maps must contain exact android/windows platforms');
+  for (const platform of ['android', 'windows']) {
+    const map = required(selectors[platform], `${platform} selector map is required`);
+    assert.deepEqual(Object.keys(map).sort(), [...PLATFORM_SELECTOR_ROLES[platform]].sort(), `${platform} selector roles must match the v3 schema exactly`);
+    for (const [role, selector] of Object.entries(map)) {
+      assert.match(role, /^[A-Za-z][A-Za-z0-9]*$/, `${platform} selector role is invalid`);
+      required(selector && typeof selector === 'object', `${platform}.${role} selector is invalid`);
+      required(SEMANTIC_LOCATORS.has(selector.using), `${platform}.${role} must use accessibility id or id`);
+      required(typeof selector.value === 'string' && selector.value.length > 0, `${platform}.${role} selector value is required`);
+    }
+  }
+
   const flows = required(config.flows, 'flows are required');
+  assert.deepEqual(Object.keys(flows).sort(), [...REQUIRED_FLOWS].sort(), 'physical E2E flows must match the v3 schema exactly');
   for (const flow of REQUIRED_FLOWS) {
     assert.ok(Array.isArray(flows[flow]) && flows[flow].length > 0, `required flow '${flow}' is missing`);
-    flows[flow].forEach((action, index) => validateAction(action, `flows.${flow}[${index}]`));
+    flows[flow].forEach((action, index) => validateAction(action, `flows.${flow}[${index}]`, selectors));
     const purposes = flows[flow].map(action => action.purpose);
     assert.ok(purposes.every(purpose => typeof purpose === 'string' && purpose.length > 0), `${flow} actions need explicit purposes`);
     assert.equal(new Set(purposes).size, purposes.length, `${flow} action purposes must be unique`);
   }
+
+  const bootstrap = flows.bootstrapIdentity;
+  requirePurpose(bootstrap, 'windowsWelcomeVisible', action => action.target === 'windows' && action.type === 'waitVisible');
+  requirePurpose(bootstrap, 'windowsDisplayName', action => action.target === 'windows' && action.type === 'setValue' && action.value.includes('{{bootstrapWindowsName}}'));
+  requirePurpose(bootstrap, 'windowsCreateIdentity', action => action.target === 'windows' && action.type === 'click');
+  requirePurpose(bootstrap, 'windowsConversationsReady', action => action.target === 'windows' && action.type === 'waitVisible');
+  requirePurpose(bootstrap, 'captureWindowsIdentity', action => action.target === 'windows' && action.type === 'captureIdentity' && action.saveAs === 'actualIdentityWindows');
+  requirePurpose(bootstrap, 'androidConversationsReady', action => action.target === 'android' && action.type === 'waitVisible');
+  requirePurpose(bootstrap, 'captureAndroidIdentity', action => action.target === 'android' && action.type === 'captureIdentity' && action.saveAs === 'actualIdentityAndroid');
+  requireOrderedPurposes('bootstrapIdentity', bootstrap, [
+    'windowsWelcomeVisible',
+    'windowsDisplayName',
+    'windowsCreateIdentity',
+    'windowsConversationsReady',
+    'captureWindowsIdentity',
+    'androidConversationsReady',
+    'captureAndroidIdentity'
+  ]);
 
   const invalid = flows.invalidIdentity;
   const invalidTarget = invalid.find(action => action.purpose === 'invalidIdentityEntry')?.target;
@@ -263,8 +339,6 @@ export function validateConfig(config) {
   ]);
 
   const mutual = flows.mutualIdentity;
-  requirePurpose(mutual, 'captureWindowsIdentity', action => action.type === 'captureIdentity' && action.target === 'windows' && action.saveAs === 'actualIdentityWindows');
-  requirePurpose(mutual, 'captureAndroidIdentity', action => action.type === 'captureIdentity' && action.target === 'android' && action.saveAs === 'actualIdentityAndroid');
   for (const [target, identity, marker] of [
     ['windows', '{{actualIdentityAndroid}}', '{{contactMarkerAndroid}}'],
     ['android', '{{actualIdentityWindows}}', '{{contactMarkerWindows}}']
@@ -275,8 +349,6 @@ export function validateConfig(config) {
     requirePurpose(mutual, `contactPresentOn${target}`, action => action.target === target && action.type === 'waitText' && action.contains.includes(marker));
   }
   requireOrderedPurposes('mutualIdentity', mutual, [
-    'captureWindowsIdentity',
-    'captureAndroidIdentity',
     'addIdentityOnwindows',
     'setMarkerOnwindows',
     'submitContactOnwindows',
@@ -298,13 +370,21 @@ export function validateConfig(config) {
   }
 
   const attachment = flows.androidToWindowsAttachment;
-  requirePurpose(attachment, 'attachmentPick', action => action.target === 'android' && action.type === 'setValue' && action.value.includes('{{androidAttachmentPath}}'));
+  requirePurpose(attachment, 'attachmentMenuOpen', action => action.target === 'android' && action.type === 'click');
+  requirePurpose(attachment, 'attachmentPickerOpen', action => action.target === 'android' && action.type === 'click');
+  requirePurpose(attachment, 'attachmentDownloadsOpen', action => action.target === 'android' && action.type === 'clickText');
+  requirePurpose(attachment, 'attachmentPick', action => action.target === 'android' && action.type === 'clickText' && action.contains.includes('{{attachmentName}}'));
+  requirePurpose(attachment, 'attachmentStaged', action => action.target === 'android' && action.type === 'waitText' && action.contains.includes('{{attachmentName}}'));
   requirePurpose(attachment, 'attachmentSend', action => action.target === 'android' && action.type === 'click');
   requirePurpose(attachment, 'attachmentListed', action => action.target === 'windows' && action.type === 'waitText' && action.contains.includes('{{attachmentName}}'));
-  requirePurpose(attachment, 'attachmentDownload', action => action.target === 'windows' && action.type === 'click');
+  requirePurpose(attachment, 'attachmentDownload', action => action.target === 'windows' && action.type === 'clickText');
   requirePurpose(attachment, 'attachmentInitialHash', action => action.type === 'assertDownloadedAttachment' && action.phase === 'initial');
   requireOrderedPurposes('androidToWindowsAttachment', attachment, [
+    'attachmentMenuOpen',
+    'attachmentPickerOpen',
+    'attachmentDownloadsOpen',
     'attachmentPick',
+    'attachmentStaged',
     'attachmentSend',
     'attachmentListed',
     'attachmentDownload',
@@ -312,9 +392,9 @@ export function validateConfig(config) {
   ]);
 
   const restart = flows.coldRestartVerify;
-  requirePurpose(restart, 'reopenConversation', action => action.target === 'windows' && action.type === 'click');
+  requirePurpose(restart, 'reopenConversation', action => action.target === 'windows' && action.type === 'clickText');
   requirePurpose(restart, 'attachmentListedAfterRestart', action => action.target === 'windows' && action.type === 'waitText' && action.contains.includes('{{attachmentName}}'));
-  requirePurpose(restart, 'attachmentRedownload', action => action.target === 'windows' && action.type === 'click');
+  requirePurpose(restart, 'attachmentRedownload', action => action.target === 'windows' && action.type === 'clickText');
   requirePurpose(restart, 'attachmentRestartHash', action => action.type === 'assertDownloadedAttachment' && action.phase === 'afterRestart');
   requireOrderedPurposes('coldRestartVerify', restart, [
     'reopenConversation',
@@ -323,11 +403,44 @@ export function validateConfig(config) {
     'attachmentRestartHash'
   ]);
 
+  const manual = flows.manualResendAfterRestart;
+  requirePurpose(manual, 'manualRouteCapture', action => action.type === 'captureRouteMarker');
+  requirePurpose(manual, 'manualRouteStop', action => action.type === 'stopObservedRoute');
+  requirePurpose(manual, 'manualMessageEntry', action => action.target === 'windows' && action.type === 'setValue' && action.value.includes('{{manualResendMessage}}'));
+  requirePurpose(manual, 'manualMessageSend', action => action.target === 'windows' && action.type === 'click');
+  requirePurpose(manual, 'manualFailureObserved', action => action.target === 'windows' && action.type === 'waitText' && action.contains === '!');
+  requirePurpose(manual, 'manualClientsRestart', action => action.type === 'restartClients');
+  requirePurpose(manual, 'manualRouteStart', action => action.type === 'startObservedRoute');
+  requirePurpose(manual, 'manualRetryClick', action => action.target === 'windows' && action.type === 'click');
+  requirePurpose(manual, 'manualDeliveryObserved', action => action.target === 'android' && action.type === 'waitText' && action.contains.includes('{{manualResendMessage}}'));
+  requireOrderedPurposes('manualResendAfterRestart', manual, [
+    'manualRouteCapture', 'manualRouteStop', 'manualMessageEntry', 'manualMessageSend',
+    'manualFailureObserved', 'manualClientsRestart', 'manualRouteStart', 'manualRetryClick',
+    'manualDeliveryObserved'
+  ]);
+
+  const automatic = flows.automaticRetryAfterRestart;
+  requirePurpose(automatic, 'automaticRouteCapture', action => action.type === 'captureRouteMarker');
+  requirePurpose(automatic, 'automaticRouteStop', action => action.type === 'stopObservedRoute');
+  requirePurpose(automatic, 'automaticMessageEntry', action => action.target === 'windows' && action.type === 'setValue' && action.value.includes('{{automaticRetryMessage}}'));
+  requirePurpose(automatic, 'automaticMessageSend', action => action.target === 'windows' && action.type === 'click');
+  requirePurpose(automatic, 'automaticFailureObserved', action => action.target === 'windows' && action.type === 'waitText' && action.contains === '!');
+  requirePurpose(automatic, 'automaticClientsRestart', action => action.type === 'restartClients');
+  requirePurpose(automatic, 'automaticRouteStart', action => action.type === 'startObservedRoute');
+  requirePurpose(automatic, 'automaticDeliveryObserved', action => action.target === 'android' && action.type === 'waitText' && action.contains.includes('{{automaticRetryMessage}}'));
+  assert.equal(hasAction(automatic, action => action.type === 'click' && action.selector?.role === 'manualRetry'), false, 'automatic retry flow must not click manual retry');
+  requireOrderedPurposes('automaticRetryAfterRestart', automatic, [
+    'automaticRouteCapture', 'automaticRouteStop', 'automaticMessageEntry', 'automaticMessageSend',
+    'automaticFailureObserved', 'automaticClientsRestart', 'automaticRouteStart',
+    'automaticDeliveryObserved'
+  ]);
+
+  assert.equal(config.chaos?.enabled, true, 'route-correlated resend flows require chaos.enabled=true');
   if (config.chaos?.enabled) {
     assert.ok(typeof config.chaos.expectedRouteNode === 'string' && config.chaos.expectedRouteNode.length > 0, 'chaos.expectedRouteNode is required');
     assert.ok(Number.isInteger(config.chaos.healthTimeoutMs) && config.chaos.healthTimeoutMs >= 1_000 && config.chaos.healthTimeoutMs <= 120_000, 'chaos.healthTimeoutMs must be 1000-120000');
     assert.ok(Number.isInteger(config.chaos.healthPollMs) && config.chaos.healthPollMs >= 100 && config.chaos.healthPollMs <= 5_000, 'chaos.healthPollMs must be 100-5000');
-    validateAction(config.chaos.routeMarker, 'chaos.routeMarker');
+    validateAction(config.chaos.routeMarker, 'chaos.routeMarker', selectors);
     assert.equal(config.chaos.routeMarker.type, 'captureRouteMarker', 'chaos.routeMarker must capture an actual route marker');
     assert.ok(Array.isArray(config.chaos.routeBindings) && config.chaos.routeBindings.length > 0, 'chaos routeNode-to-composeService bindings are required');
     assert.equal(new Set(config.chaos.routeBindings.map(binding => binding.routeNode)).size, config.chaos.routeBindings.length, 'chaos routeNode bindings must be unique');
@@ -487,6 +600,10 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
   assert.ok(installedPath, `Android package ${config.android.packageName} base APK is not installed`);
   const installedDump = await command('adb', ['-s', config.android.serial, 'shell', 'dumpsys', 'package', config.android.packageName]);
   const installed = parseInstalledPackage(installedDump.stdout);
+  const resolvedActivity = String((await command('adb', [
+    '-s', config.android.serial, 'shell', 'cmd', 'package', 'resolve-activity', '--brief', config.android.packageName
+  ])).stdout).trim();
+  assert.equal(resolvedActivity, `${config.android.packageName}/${config.android.launchActivity}`, 'installed Android launcher activity mismatch');
 
   await fs.access(config.android.apkPath);
   const apkBytes = await fs.readFile(config.android.apkPath);
@@ -515,12 +632,12 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
   const runAppData = join(appDataParent, `physical-e2e-${runId}`);
   assert.ok(safeUnder(appDataParent, runAppData), 'unique AppData escaped configured root');
   assert.equal(resolve(runAppData), join(appDataParent, basename(runAppData)), 'unique AppData must be a direct child of configured root');
-  const downloadRoot = join(runAppData, 'Downloads');
+  const downloadRoot = resolve(config.windows.downloadDirectory);
   let appDataCreated = false;
   try {
     await fs.mkdir(runAppData, { recursive: false });
     appDataCreated = true;
-    await fs.mkdir(downloadRoot, { recursive: false });
+    await fs.mkdir(downloadRoot, { recursive: true });
     await assertCanonicalDirectory(runAppData, fs);
     await assertCanonicalDirectory(downloadRoot, fs);
     await fs.writeFile(join(runAppData, '.deep-e2e-isolated'), 'physical-e2e isolated appdata\n', 'utf8');
@@ -534,6 +651,7 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
     android: {
       serial: config.android.serial,
       packageName: config.android.packageName,
+      launchActivity: config.android.launchActivity,
       installedPath,
       installed,
       apk: { ...badging, signingSha256, bytes: apkBytes.length, sha256: sha256(apkBytes), path: config.android.apkPath }
@@ -543,7 +661,7 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
       exeSha256: sha256(windowsBytes),
       bytes: windowsBytes.length,
       isolatedAppData: runAppData,
-      downloadRoot
+      downloadRoot: await fs.realpath(downloadRoot)
     },
     attachment: {
       path: canonicalAttachmentPath,
@@ -589,14 +707,67 @@ async function stopDriver(driver, fetchImpl) {
   assert.equal(response.ok, true, 'WebDriver session cleanup failed');
 }
 
-async function findElement(driver, selector, fetchImpl) {
-  const value = await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element`, {
+async function findElements(driver, selector, fetchImpl) {
+  const values = await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/elements`, {
     method: 'POST',
     body: JSON.stringify(selector)
   });
-  const id = value['element-6066-11e4-a52e-4f735466cecf'] ?? value.ELEMENT;
-  assert.ok(id, `semantic element '${selector.value}' was not found`);
-  return id;
+  assert.ok(Array.isArray(values), `semantic elements '${selector.value}' returned an invalid collection`);
+  const ids = values.map(value => value['element-6066-11e4-a52e-4f735466cecf'] ?? value.ELEMENT)
+    .filter(Boolean);
+  const visible = [];
+  for (const id of ids) {
+    const displayed = await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/displayed`);
+    if (displayed === true) visible.push(id);
+  }
+  return visible;
+}
+
+async function findExactlyOneElement(driver, selector, fetchImpl) {
+  const ids = await findElements(driver, selector, fetchImpl);
+  assert.equal(ids.length, 1, `semantic selector '${selector.value}' must resolve to exactly one visible element`);
+  return ids[0];
+}
+
+async function waitForExactlyOneElement(driver, selector, fetchImpl, timeoutMs = 20_000, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms))) {
+  const deadline = Date.now() + timeoutMs;
+  let latestCount = 0;
+  do {
+    try {
+      const ids = await findElements(driver, selector, fetchImpl);
+      latestCount = ids.length;
+      if (ids.length === 1) return ids[0];
+      assert.ok(ids.length <= 1, `semantic selector '${selector.value}' is ambiguous (${ids.length} visible elements)`);
+    } catch (error) {
+      if (String(error?.message).includes('ambiguous')) throw error;
+    }
+    await sleep(200);
+  } while (Date.now() < deadline);
+  assert.fail(`semantic selector '${selector.value}' did not resolve to one visible element (last count ${latestCount})`);
+}
+
+async function findExactlyOneElementContainingText(driver, selector, expected, fetchImpl) {
+  const ids = await findElements(driver, selector, fetchImpl);
+  const matches = [];
+  for (const id of ids) {
+    const text = await readElementText(driver, id, fetchImpl);
+    if (text.includes(expected)) matches.push(id);
+  }
+  assert.equal(matches.length, 1, `semantic selector '${selector.value}' must have exactly one element containing its correlated marker`);
+  return matches[0];
+}
+
+async function waitForExactlyOneElementContainingText(driver, selector, expected, fetchImpl, timeoutMs = 20_000, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms))) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    try {
+      return await findExactlyOneElementContainingText(driver, selector, expected, fetchImpl);
+    } catch (error) {
+      if (error?.actual !== 0) throw error;
+    }
+    await sleep(200);
+  } while (Date.now() < deadline);
+  assert.fail(`semantic selector '${selector.value}' did not expose one element containing its correlated marker`);
 }
 
 async function readElementText(driver, elementId, fetchImpl) {
@@ -608,10 +779,17 @@ async function waitForText(driver, selector, expected, fetchImpl, timeoutMs = 20
   let latest = '';
   do {
     try {
-      const id = await findElement(driver, selector, fetchImpl);
-      latest = await readElementText(driver, id, fetchImpl);
-      if (latest.includes(expected)) return latest;
-    } catch {
+      const ids = await findElements(driver, selector, fetchImpl);
+      const matches = [];
+      for (const id of ids) {
+        const text = await readElementText(driver, id, fetchImpl);
+        latest = text;
+        if (text.includes(expected)) matches.push(text);
+      }
+      assert.ok(matches.length <= 1, `semantic selector '${selector.value}' produced duplicate correlated markers`);
+      if (matches.length === 1) return matches[0];
+    } catch (error) {
+      if (String(error?.message).includes('duplicate correlated markers')) throw error;
       // The semantic element may not have reached the accessibility tree yet.
     }
     await sleep(200);
@@ -623,16 +801,18 @@ async function assertTextAbsentForWindow(driver, selector, forbidden, fetchImpl,
   const intervalMs = 200;
   const polls = Math.max(2, Math.ceil(stabilityMs / intervalMs) + 1);
   for (let poll = 0; poll < polls; poll += 1) {
-    const id = await findElement(driver, selector, fetchImpl);
-    const text = await readElementText(driver, id, fetchImpl);
-    assert.equal(text.includes(forbidden), false, 'invalid identity appeared during the contact-state stability window');
+    const ids = await findElements(driver, selector, fetchImpl);
+    for (const id of ids) {
+      const text = await readElementText(driver, id, fetchImpl);
+      assert.equal(text.includes(forbidden), false, 'invalid identity appeared during the contact-state stability window');
+    }
     if (poll + 1 < polls) await sleep(intervalMs);
   }
 }
 
 export async function verifyDownloadedAttachment(path, downloadRoot, expectedSha256, fs = fsDefault, sourceIdentity) {
-  assert.ok(safeUnder(downloadRoot, path), 'decrypted destination escaped the unique download root');
-  assert.equal(resolve(path), join(resolve(downloadRoot), basename(path)), 'decrypted destination must be a direct child of the unique download root');
+  assert.ok(safeUnder(downloadRoot, path), 'decrypted destination escaped the production Downloads\\Deep root');
+  assert.equal(resolve(path), join(resolve(downloadRoot), basename(path)), 'decrypted destination must be a direct child of Downloads\\Deep');
   await assertCanonicalDirectory(downloadRoot, fs);
   const info = await fs.lstat(path);
   await assertNotReparsePoint(path, info, fs, 'decrypted destination');
@@ -673,9 +853,24 @@ async function waitForDownloadedAttachment(fileContext, expectedSha256, dependen
   assert.fail('decrypted attachment did not appear before timeout');
 }
 
-async function executeActions(drivers, actions, variables, evidence, dependencies, fileContext) {
+function resolveSelector(config, definition, variables) {
+  const selected = config.selectors[definition.target][definition.selector.role];
+  return {
+    using: selected.using,
+    value: interpolate(selected.value, variables)
+  };
+}
+
+async function executeActions(drivers, actions, variables, evidence, dependencies, fileContext, config, systemActions = {}) {
   const fetchImpl = dependencies.fetch ?? fetch;
   for (const definition of actions) {
+    if (SYSTEM_ACTIONS.has(definition.type)) {
+      const action = systemActions[definition.type];
+      assert.equal(typeof action, 'function', `System action '${definition.type}' is unavailable`);
+      await action();
+      evidence.actions.push({ type: definition.type, target: definition.target, purpose: definition.purpose });
+      continue;
+    }
     if (definition.type === 'assertDownloadedAttachment') {
       const proof = await waitForDownloadedAttachment(
         fileContext,
@@ -688,10 +883,23 @@ async function executeActions(drivers, actions, variables, evidence, dependencie
     }
     const driver = drivers[definition.target];
     assert.ok(driver, `No active ${definition.target} driver`);
-    const selector = {
-      using: definition.selector.using,
-      value: interpolate(definition.selector.value, variables)
-    };
+    const selector = resolveSelector(config, definition, variables);
+    if (definition.type === 'waitVisible') {
+      await waitForExactlyOneElement(
+        driver,
+        selector,
+        fetchImpl,
+        definition.timeoutMs,
+        dependencies.sleep
+      );
+      evidence.actions.push({
+        type: definition.type,
+        target: definition.target,
+        selectorSha256: sha256(`${selector.using}:${selector.value}`),
+        purpose: definition.purpose
+      });
+      continue;
+    }
     if (definition.type === 'waitText') {
       await waitForText(
         driver,
@@ -709,18 +917,24 @@ async function executeActions(drivers, actions, variables, evidence, dependencie
       });
       continue;
     }
-    const id = await findElement(driver, selector, fetchImpl);
-    if (definition.type === 'click') {
-      await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/click`, { method: 'POST', body: '{}' });
-    } else if (definition.type === 'setValue') {
-      await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/value`, {
-        method: 'POST',
-        body: JSON.stringify({ text: interpolate(definition.value, variables) })
+    if (definition.type === 'assertText') {
+      await waitForText(
+        driver,
+        selector,
+        interpolate(definition.contains, variables),
+        fetchImpl,
+        definition.timeoutMs,
+        dependencies.sleep
+      );
+      evidence.actions.push({
+        type: definition.type,
+        target: definition.target,
+        selectorSha256: sha256(`${selector.using}:${selector.value}`),
+        purpose: definition.purpose
       });
-    } else if (definition.type === 'assertText') {
-      const text = await readElementText(driver, id, fetchImpl);
-      assert.ok(text.includes(interpolate(definition.contains, variables)), `semantic rejection evidence '${selector.value}' is missing`);
-    } else if (definition.type === 'assertNotTextStable') {
+      continue;
+    }
+    if (definition.type === 'assertNotTextStable') {
       await assertTextAbsentForWindow(
         driver,
         selector,
@@ -729,6 +943,27 @@ async function executeActions(drivers, actions, variables, evidence, dependencie
         definition.stabilityMs,
         dependencies.sleep
       );
+      evidence.actions.push({
+        type: definition.type,
+        target: definition.target,
+        selectorSha256: sha256(`${selector.using}:${selector.value}`),
+        purpose: definition.purpose
+      });
+      continue;
+    }
+    const id = definition.type === 'clickText'
+      ? await waitForExactlyOneElementContainingText(
+          driver, selector, interpolate(definition.contains, variables), fetchImpl, definition.timeoutMs, dependencies.sleep)
+      : await waitForExactlyOneElement(driver, selector, fetchImpl, definition.timeoutMs, dependencies.sleep);
+    if (definition.type === 'click') {
+      await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/click`, { method: 'POST', body: '{}' });
+    } else if (definition.type === 'clickText') {
+      await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/click`, { method: 'POST', body: '{}' });
+    } else if (definition.type === 'setValue') {
+      await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/value`, {
+        method: 'POST',
+        body: JSON.stringify({ text: interpolate(definition.value, variables) })
+      });
     } else if (definition.type === 'captureIdentity') {
       const identity = (await readElementText(driver, id, fetchImpl)).trim();
       const pattern = definition.target === 'windows' ? variables.windowsIdentityPattern : variables.androidIdentityPattern;
@@ -811,6 +1046,7 @@ function sanitizedPreflight(preflightEvidence) {
     android: {
       serial: preflightEvidence.android.serial,
       packageName: preflightEvidence.android.packageName,
+      launchActivity: preflightEvidence.android.launchActivity,
       installed: preflightEvidence.android.installed,
       apk: {
         packageName: preflightEvidence.android.apk.packageName,
@@ -873,6 +1109,7 @@ export async function runPhysicalE2E(config, options = {}) {
 
   const androidAttachmentPath = `${config.android.attachmentDirectory.replace(/\/$/, '')}/${markers.attachmentName}`;
   const downloadPath = join(preflightEvidence.windows.downloadRoot, markers.attachmentName);
+  await assertPathAbsent(fs, downloadPath, 'pre-existing correlated Windows download');
   const variables = {
     ...markers,
     androidAttachmentPath,
@@ -882,7 +1119,7 @@ export async function runPhysicalE2E(config, options = {}) {
     expectedRouteNode: config.chaos?.expectedRouteNode
   };
   const evidence = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     startedAt: new Date().toISOString(),
     status: 'failed',
     markers: {
@@ -892,6 +1129,8 @@ export async function runPhysicalE2E(config, options = {}) {
       contactMarkerAndroid: markers.contactMarkerAndroid,
       windowsToAndroidMessage: markers.windowsToAndroidMessage,
       androidToWindowsMessage: markers.androidToWindowsMessage,
+      manualResendMessage: markers.manualResendMessage,
+      automaticRetryMessage: markers.automaticRetryMessage,
       attachmentName: markers.attachmentName
     },
     preflight: sanitizedPreflight(preflightEvidence),
@@ -906,7 +1145,8 @@ export async function runPhysicalE2E(config, options = {}) {
   let cleanupError;
   let artifactError;
   let runSucceeded = false;
-  let initialPid;
+  let previousPid;
+  let stoppedRouteService;
 
   const launchWindows = async phase => {
     const isolated = preflightEvidence.windows.isolatedAppData;
@@ -924,8 +1164,8 @@ export async function runPhysicalE2E(config, options = {}) {
     });
     activeWindowsProcess = child;
     const provenance = await inspectWindowsProcess(command, config, child, dependencies);
-    if (phase === 'restart') assert.notEqual(provenance.pid, initialPid, 'cold restart reused the original Windows PID');
-    if (phase === 'initial') initialPid = provenance.pid;
+    if (phase === 'restart') assert.notEqual(provenance.pid, previousPid, 'client restart reused the active Windows PID');
+    previousPid = provenance.pid;
     evidence.processes.push({
       phase,
       pid: provenance.pid,
@@ -941,6 +1181,7 @@ export async function runPhysicalE2E(config, options = {}) {
     drivers.android = await startDriver(config.android, {
       'appium:udid': config.android.serial,
       'appium:appPackage': config.android.packageName,
+      'appium:appActivity': config.android.launchActivity,
       'deep:versionCode': apk.versionCode,
       'deep:versionName': apk.versionName,
       'deep:signingSha256': apk.signingSha256
@@ -951,6 +1192,40 @@ export async function runPhysicalE2E(config, options = {}) {
       'deep:processId': windowsProvenance.pid,
       'deep:executableSha256': preflightEvidence.windows.exeSha256
     }, fetchImpl);
+  };
+
+  const observedRouteService = () => {
+    const route = required(variables.observedRouteNode, 'No observed route is available for the chaos action');
+    const binding = config.chaos?.routeBindings?.find(item => item.routeNode === route);
+    return required(binding?.composeService, 'Observed route has no exact compose-service binding');
+  };
+
+  const stopObservedRoute = async () => {
+    const service = observedRouteService();
+    await command('docker', ['compose', '-p', config.compose.project, '-f', config.compose.file, 'stop', service]);
+    stoppedRouteService = service;
+  };
+
+  const startObservedRoute = async () => {
+    const service = observedRouteService();
+    await command('docker', ['compose', '-p', config.compose.project, '-f', config.compose.file, 'start', service]);
+    const pin = required(config.compose.endpointPins.find(item => item.service === service), 'Observed route service has no endpoint pin');
+    await waitForEndpointPin(
+      pin,
+      fetchImpl,
+      config.chaos.healthTimeoutMs,
+      config.chaos.healthPollMs,
+      dependencies.sleep,
+      dependencies
+    );
+    stoppedRouteService = undefined;
+  };
+
+  const restartClients = async () => {
+    await stopActiveClients();
+    await command('adb', ['-s', config.android.serial, 'shell', 'am', 'start', '-W', '-n', `${config.android.packageName}/${config.android.launchActivity}`]);
+    const restartedWindows = await launchWindows('restart');
+    await startDrivers(restartedWindows);
   };
 
   const stopActiveClients = async () => {
@@ -968,22 +1243,19 @@ export async function runPhysicalE2E(config, options = {}) {
   try {
     await command('adb', ['-s', config.android.serial, 'push', config.attachmentPath, androidAttachmentPath]);
     const initialWindows = await launchWindows('initial');
-    await command('adb', ['-s', config.android.serial, 'shell', 'monkey', '-p', config.android.packageName, '1']);
+    await command('adb', ['-s', config.android.serial, 'shell', 'am', 'start', '-W', '-n', `${config.android.packageName}/${config.android.launchActivity}`]);
     await startDrivers(initialWindows);
 
     for (const name of REQUIRED_FLOWS) {
       if (name === 'coldRestartVerify') {
-        await stopActiveClients();
-        await command('adb', ['-s', config.android.serial, 'shell', 'monkey', '-p', config.android.packageName, '1']);
-        const restartedWindows = await launchWindows('restart');
-        await startDrivers(restartedWindows);
+        await restartClients();
       }
       const flowEvidence = { name, actions: [], files: [], identities: [] };
       await executeActions(drivers, config.flows[name], variables, flowEvidence, dependencies, {
         downloadPath,
         downloadRoot: preflightEvidence.windows.downloadRoot,
         sourceIdentity: preflightEvidence.attachment.sourceIdentity
-      });
+      }, config, { restartClients, stopObservedRoute, startObservedRoute });
       evidence.flows.push(flowEvidence);
       evidence.files.push(...flowEvidence.files);
       if (name === 'mutualIdentity') {
@@ -1003,7 +1275,7 @@ export async function runPhysicalE2E(config, options = {}) {
         downloadPath,
         downloadRoot: preflightEvidence.windows.downloadRoot,
         sourceIdentity: preflightEvidence.attachment.sourceIdentity
-      });
+      }, config, { restartClients, stopObservedRoute, startObservedRoute });
       assert.equal(variables.observedRouteNode, config.chaos.expectedRouteNode, 'route correlation changed before chaos');
       const binding = config.chaos.routeBindings.find(item => item.routeNode === variables.observedRouteNode);
       assert.ok(binding, 'captured route node has no compose service binding');
@@ -1068,6 +1340,21 @@ export async function runPhysicalE2E(config, options = {}) {
     });
     await cleanupStep(evidence.cleanup, 'android-attachment', async () => {
       await command('adb', ['-s', config.android.serial, 'shell', 'rm', '-f', androidAttachmentPath]);
+    });
+    await cleanupStep(evidence.cleanup, 'observed-route-service', async () => {
+      if (!stoppedRouteService) return;
+      await command('docker', ['compose', '-p', config.compose.project, '-f', config.compose.file, 'start', stoppedRouteService]);
+      const pin = required(config.compose.endpointPins.find(item => item.service === stoppedRouteService), 'stopped route service has no endpoint pin');
+      await waitForEndpointPin(pin, fetchImpl, config.chaos.healthTimeoutMs, config.chaos.healthPollMs, dependencies.sleep, dependencies);
+      stoppedRouteService = undefined;
+    });
+    await cleanupStep(evidence.cleanup, 'windows-downloaded-attachment', async () => {
+      try {
+        await fs.unlink(downloadPath);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+      await assertPathAbsent(fs, downloadPath, 'Windows downloaded attachment');
     });
     await cleanupStep(evidence.cleanup, 'isolated-appdata', async () => {
       assert.ok(safeUnder(config.windows.appDataRoot, preflightEvidence.windows.isolatedAppData), 'cleanup target escaped AppData root');

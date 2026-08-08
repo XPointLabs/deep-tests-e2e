@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import test from 'node:test';
 import example from '../../fixtures/physical-e2e.example.json' with { type: 'json' };
 import {
+  ANDROID_LAUNCH_ACTIVITY,
   ANDROID_PACKAGE,
+  REQUIRED_FLOWS,
   assertArm64WindowsExecutable,
   assertPathAbsent,
   createMarkers,
@@ -44,6 +46,7 @@ async function localConfig(prefix = 'deep-physical-test-') {
   config.android.apkPath = join(root, 'deep.apk');
   config.windows.exePath = join(root, config.windows.processName);
   config.windows.appDataRoot = join(root, 'appdata');
+  config.windows.downloadDirectory = join(root, 'Downloads', 'Deep');
   config.attachmentPath = join(root, 'source.bin');
   await writeFile(config.compose.file, 'services: {}');
   await writeFile(config.android.apkPath, 'apk fixture');
@@ -52,7 +55,7 @@ async function localConfig(prefix = 'deep-physical-test-') {
   return { root, config };
 }
 
-function commandMock(config, log, pids = [4101, 4102]) {
+function commandMock(config, log, pids = [4101, 4102, 4103, 4104]) {
   const permittedPids = [...pids];
   return async (file, args) => {
     log.push({ file, args });
@@ -89,6 +92,9 @@ function commandMock(config, log, pids = [4101, 4102]) {
     if (file === 'adb' && args.includes('dumpsys')) {
       return { stdout: `versionCode=7 versionName=1.2.3 signatures:[${signerHex}]\n` };
     }
+    if (file === 'adb' && args.includes('resolve-activity')) {
+      return { stdout: `${config.android.packageName}/${config.android.launchActivity}\n` };
+    }
     return { stdout: '' };
   };
 }
@@ -103,7 +109,7 @@ function endpointFetch(config) {
 
 function webdriverFetch(config, runId, log, downloadWrites) {
   const markers = createMarkers(runId);
-  const downloadPath = join(config.windows.appDataRoot, `physical-e2e-${runId}`, 'Downloads', markers.attachmentName);
+  const downloadPath = join(config.windows.downloadDirectory, markers.attachmentName);
   const sessions = new Map();
   let sessionCounter = 0;
   return async (input, init = {}) => {
@@ -124,14 +130,14 @@ function webdriverFetch(config, runId, log, downloadWrites) {
     if (/\/session\/[^/]+$/.test(url.pathname) && method === 'DELETE') {
       return Response.json({ value: null });
     }
-    if (url.pathname.endsWith('/element') && method === 'POST') {
+    if (url.pathname.endsWith('/elements') && method === 'POST') {
       const selector = JSON.parse(init.body);
-      return Response.json({ value: { 'element-6066-11e4-a52e-4f735466cecf': encodeURIComponent(selector.value) } });
+      return Response.json({ value: [{ 'element-6066-11e4-a52e-4f735466cecf': encodeURIComponent(selector.value) }] });
     }
     const click = url.pathname.match(/\/session\/([^/]+)\/element\/([^/]+)\/click$/);
     if (click) {
       const selector = decodeURIComponent(click[2]);
-      if (selector === 'DownloadAttachmentButton') {
+      if (selector === 'DesktopWorkspace.AttachmentSave') {
         downloadWrites.push(downloadPath);
         await writeFile(downloadPath, 'decrypted fixture');
       }
@@ -140,16 +146,26 @@ function webdriverFetch(config, runId, log, downloadWrites) {
     if (url.pathname.endsWith('/value') && method === 'POST') {
       return Response.json({ value: null });
     }
+    if (url.pathname.endsWith('/displayed')) {
+      return Response.json({ value: true });
+    }
     const textMatch = url.pathname.match(/\/session\/([^/]+)\/element\/([^/]+)\/text$/);
     if (textMatch) {
       const selector = decodeURIComponent(textMatch[2]);
       const target = sessions.get(textMatch[1]);
       const values = {
-        OwnIdentity: target === 'windows' ? `05${'1'.repeat(64)}` : `05${'2'.repeat(64)}`,
-        IdentityValidation: 'invalid identity rejected',
-        ContactList: `${markers.contactMarkerWindows} ${markers.contactMarkerAndroid}`,
-        ConversationMessages: `${markers.windowsToAndroidMessage} ${markers.androidToWindowsMessage} ${markers.attachmentName}`,
-        RouteNodeMarker: config.chaos?.expectedRouteNode ?? 'router'
+        'Settings.SessionId': target === 'windows' ? `05${'1'.repeat(64)}` : `05${'2'.repeat(64)}`,
+        'network.xpoint.deep.e2e:id/Settings.SessionId': `05${'2'.repeat(64)}`,
+        'NewConversation.Error': 'Некорректный идентификатор',
+        'DesktopWorkspace.ConversationRow': `${markers.contactMarkerWindows} ${markers.contactMarkerAndroid}`,
+        'network.xpoint.deep.e2e:id/Conversations.ConversationRow': `${markers.contactMarkerWindows} ${markers.contactMarkerAndroid}`,
+        'DesktopWorkspace.DirectMessageBody': `${markers.windowsToAndroidMessage} ${markers.androidToWindowsMessage} ${markers.manualResendMessage} ${markers.automaticRetryMessage}`,
+        'network.xpoint.deep.e2e:id/Chat.MessageBody': `${markers.windowsToAndroidMessage} ${markers.androidToWindowsMessage} ${markers.manualResendMessage} ${markers.automaticRetryMessage}`,
+        'DesktopWorkspace.DirectAttachmentFilename': markers.attachmentName,
+        'network.xpoint.deep.e2e:id/Chat.StagedAttachmentFilename': markers.attachmentName,
+        'android:id/title': `Загрузки ${markers.attachmentName}`,
+        'DesktopWorkspace.DirectDeliveryStatus': '!',
+        'PhysicalE2E.RouteNodeMarker': config.chaos.expectedRouteNode
       };
       return Response.json({ value: values[selector] ?? '' });
     }
@@ -162,7 +178,7 @@ async function harness(runId = 'review-run-0001') {
   const commandLog = [];
   const webdriverLog = [];
   const downloadWrites = [];
-  const pids = [4101, 4102];
+  const pids = [4101, 4102, 4103, 4104];
   const dependencies = {
     command: commandMock(local.config, commandLog, pids),
     fetch: webdriverFetch(local.config, runId, webdriverLog, downloadWrites),
@@ -181,6 +197,29 @@ test('markers are unique, include the attachment filename, and reject unknown te
   assert.match(first.attachmentName, /^deep-e2e-attachment-[0-9a-f]{20}\.bin$/);
   assert.equal(interpolate('{{windowsToAndroidMessage}}', first), first.windowsToAndroidMessage);
   assert.throws(() => interpolate('{{unknown}}', first), /Unknown physical E2E template/);
+});
+
+test('physical fixture pins real platform selectors, launcher, navigation, and resend flows', () => {
+  assert.equal(example.version, 3);
+  assert.equal(example.android.launchActivity, ANDROID_LAUNCH_ACTIVITY);
+  assert.equal(example.selectors.android.pageConversations.value, `${ANDROID_PACKAGE}:id/Page.Conversations`);
+  assert.equal(example.selectors.android.newConversation.value, `${ANDROID_PACKAGE}:id/Conversations.NewConversationTop`);
+  assert.equal(example.selectors.android.newMessage.value, `${ANDROID_PACKAGE}:id/StartConversation.NewMessage`);
+  assert.equal(example.selectors.windows.newConversation.value, 'Conversations.NewConversation');
+  assert.equal(example.selectors.windows.newMessage.value, 'StartConversation.NewMessage');
+  assert.equal(example.selectors.windows.messageComposer.value, 'DesktopWorkspace.DirectDraft');
+  assert.equal(example.selectors.windows.routeNodeMarker.value, 'PhysicalE2E.RouteNodeMarker');
+  assert.equal(example.windows.downloadDirectory.endsWith('\\Downloads\\Deep'), true);
+  assert.deepEqual(Object.keys(example.flows).sort(), [...REQUIRED_FLOWS].sort());
+  const serialized = JSON.stringify(example);
+  for (const legacy of [
+    'AddIdentityInput', 'AddIdentitySubmit', 'IdentityValidation', 'ContactList',
+    'OwnIdentity', 'ContactAliasInput', 'MessageComposer', 'SendMessageButton',
+    'ConversationMessages', 'AttachmentPicker', 'SendAttachmentButton',
+    'DownloadAttachmentButton', 'CorrelatedConversation'
+  ]) assert.equal(serialized.includes(legacy), false, `legacy fake selector remains: ${legacy}`);
+  assert.equal(example.flows.automaticRetryAfterRestart.some(action => action.selector?.role === 'manualRetry'), false);
+  assert.ok(example.flows.manualResendAfterRestart.some(action => action.selector?.role === 'manualRetry'));
 });
 
 test('compose parser accepts Docker array and line formats', () => {
@@ -246,9 +285,21 @@ test('default Windows ReparsePoint adapter detects a real junction', async t => 
 });
 
 test('config mutation gates reject coordinates, weak endpoints, incomplete negative flow, and uncorrelated chaos', () => {
+  const legacyVersion = structuredClone(example);
+  legacyVersion.version = 2;
+  assert.throws(() => validateConfig(legacyVersion), /config.version must be 3/);
+
+  const legacySelectorAlias = structuredClone(example);
+  legacySelectorAlias.selectors.windows.AddIdentityInput = { using: 'accessibility id', value: 'AddIdentityInput' };
+  assert.throws(() => validateConfig(legacySelectorAlias), /selector roles must match the v3 schema exactly/);
+
+  const legacyFlowAlias = structuredClone(example);
+  legacyFlowAlias.flows.legacyMutualIdentity = [];
+  assert.throws(() => validateConfig(legacyFlowAlias), /flows must match the v3 schema exactly/);
+
   const coordinate = structuredClone(example);
-  coordinate.flows.invalidIdentity[0].selector.using = 'xpath';
-  assert.throws(() => validateConfig(coordinate), /never coordinates/);
+  coordinate.selectors.windows.identityInput.using = 'xpath';
+  assert.throws(() => validateConfig(coordinate), /must use accessibility id or id/);
 
   const endpoint = structuredClone(example);
   endpoint.compose.endpointPins.pop();
@@ -309,6 +360,20 @@ test('config mutation gates reject coordinates, weak endpoints, incomplete negat
   traversal.android.attachmentDirectory = '/sdcard/Download/../../data';
   assert.throws(() => validateConfig(traversal), /cannot traverse/);
 
+  const wrongLauncher = structuredClone(example);
+  wrongLauncher.android.launchActivity = 'network.xpoint.deep.MainActivity';
+  assert.throws(() => validateConfig(wrongLauncher), /launchActivity must pin/);
+
+  const fakeDownloadRoot = structuredClone(example);
+  fakeDownloadRoot.windows.downloadDirectory = 'C:\\deep-e2e-appdata\\Downloads';
+  assert.throws(() => validateConfig(fakeDownloadRoot), /production Downloads/);
+
+  const automaticManualFallback = structuredClone(example);
+  automaticManualFallback.flows.automaticRetryAfterRestart.push({
+    target: 'windows', type: 'click', purpose: 'fakeAutomaticFallback', selector: { role: 'manualRetry' }
+  });
+  assert.throws(() => validateConfig(automaticManualFallback), /must not click manual retry/);
+
   const chaos = structuredClone(example);
   chaos.chaos = {
     enabled: true,
@@ -318,7 +383,8 @@ test('config mutation gates reject coordinates, weak endpoints, incomplete negat
     routeMarker: {
       target: 'windows',
       type: 'captureRouteMarker',
-      selector: { using: 'accessibility id', value: 'RouteNodeMarker' },
+      purpose: 'routeChaosCapture',
+      selector: { role: 'routeNodeMarker' },
       saveAs: 'observedRouteNode',
       expected: '{{expectedRouteNode}}'
     },
@@ -569,7 +635,8 @@ test('mocked runner proves initial hash, deletion, distinct restart PID, driver 
     routeMarker: {
       target: 'windows',
       type: 'captureRouteMarker',
-      selector: { using: 'accessibility id', value: 'RouteNodeMarker' },
+      purpose: 'routeChaosCapture',
+      selector: { role: 'routeNodeMarker' },
       saveAs: 'observedRouteNode',
       expected: '{{expectedRouteNode}}'
     },
@@ -582,23 +649,32 @@ test('mocked runner proves initial hash, deletion, distinct restart PID, driver 
     dependencies: h.dependencies
   });
   assert.equal(evidence.status, 'passed');
+  assert.equal(evidence.schemaVersion, 3);
   assert.equal(evidence.cleanup.succeeded, true);
   assert.equal(evidence.chaos.deterministicFailoverClaim, false);
   assert.match(evidence.chaos.observedRouteNodeSha256, /^[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(evidence.chaos).includes('route-node-001'), false);
   assert.equal(evidence.chaos.actions[0].health.service, 'router');
-  assert.deepEqual(evidence.processes.map(item => item.pid), [4101, 4102]);
+  assert.deepEqual(evidence.processes.map(item => item.pid), [4101, 4102, 4103, 4104]);
   assert.equal(h.downloadWrites.length, 2);
+  assert.deepEqual(evidence.flows.map(flow => flow.name), [...REQUIRED_FLOWS]);
+  assert.ok(evidence.flows.find(flow => flow.name === 'manualResendAfterRestart').actions.some(action => action.purpose === 'manualRetryClick'));
+  assert.equal(evidence.flows.find(flow => flow.name === 'automaticRetryAfterRestart').actions.some(action => action.purpose === 'manualRetryClick'), false);
   assert.deepEqual(evidence.files.filter(item => item.sha256).map(item => item.phase), ['initial', 'afterRestart']);
   const driverBodies = h.webdriverLog.filter(item => item.url.endsWith('/session') && item.method === 'POST').map(item => JSON.parse(item.body).capabilities.alwaysMatch);
   assert.ok(driverBodies.some(caps => caps['deep:signingSha256'] === signerSha256 && caps['appium:appPackage'] === ANDROID_PACKAGE));
   assert.ok(driverBodies.some(caps => caps['deep:processId'] === 4101));
   assert.ok(driverBodies.some(caps => caps['deep:processId'] === 4102));
+  assert.ok(driverBodies.some(caps => caps['deep:processId'] === 4104));
   const forceStops = h.commandLog.filter(item => item.file === 'adb' && item.args.includes('force-stop'));
   assert.ok(forceStops.length >= 2);
-  assert.equal(h.commandLog.filter(item => item.file === 'powershell.exe').length, 3);
+  assert.equal(h.commandLog.filter(item => item.file === 'adb' && item.args.includes('resolve-activity')).length, 1);
+  assert.equal(h.commandLog.filter(item => item.file === 'adb' && item.args.includes('start') && item.args.includes(`${ANDROID_PACKAGE}/${ANDROID_LAUNCH_ACTIVITY}`)).length, 4);
+  assert.equal(h.commandLog.filter(item => item.file === 'powershell.exe').length, 5);
   assert.ok(h.commandLog.some(item => item.file === 'docker' && item.args.includes('restart') && item.args.includes('router')));
   assert.ok(h.webdriverLog.filter(item => item.endpointService === 'router').length >= 2);
+  assert.equal(h.webdriverLog.some(item => /\/element$/.test(new URL(item.url ?? 'http://mock/').pathname)), false);
+  await assert.rejects(stat(join(h.config.windows.downloadDirectory, createMarkers(h.runId).attachmentName)));
   await assert.rejects(stat(join(h.config.windows.appDataRoot, `physical-e2e-${h.runId}`)));
   const artifact = JSON.parse(await readFile(join(h.artifactsDir, 'physical-deep-e2e.json'), 'utf8'));
   assert.equal(artifact.status, 'passed');
@@ -626,7 +702,7 @@ test('one cleanup failure cannot skip later cleanup and prevents passed status',
   const h = await harness('cleanup-failure-0001');
   const baseCommand = h.dependencies.command;
   h.dependencies.command = async (file, args) => {
-    if (file === 'taskkill' && args.includes('4102')) throw new Error('simulated process cleanup failure');
+    if (file === 'taskkill' && args.includes('4104')) throw new Error('simulated process cleanup failure');
     return baseCommand(file, args);
   };
   await assert.rejects(runPhysicalE2E(h.config, {
@@ -639,5 +715,6 @@ test('one cleanup failure cannot skip later cleanup and prevents passed status',
   assert.equal(artifact.status, 'failed');
   assert.equal(artifact.cleanup.succeeded, false);
   assert.ok(artifact.cleanup.steps.some(step => step.name === 'isolated-appdata' && step.succeeded));
+  assert.ok(h.commandLog.some(item => item.file === 'docker' && item.args.includes('start') && item.args.includes('router')));
   await rm(h.root, { recursive: true, force: true });
 });
