@@ -55,6 +55,18 @@ async function localConfig(prefix = 'deep-physical-test-') {
   return { root, config };
 }
 
+function hostValidationConfig() {
+  const config = structuredClone(example);
+  const root = join(tmpdir(), 'deep-physical-validation');
+  config.compose.file = join(root, 'compose.yml');
+  config.android.apkPath = join(root, 'deep.apk');
+  config.windows.exePath = join(root, config.windows.processName);
+  config.windows.appDataRoot = join(root, 'appdata');
+  config.windows.downloadDirectory = join(root, 'Downloads', 'Deep');
+  config.attachmentPath = join(root, 'source.bin');
+  return config;
+}
+
 function commandMock(config, log, pids = [4101, 4102, 4103, 4104]) {
   const permittedPids = [...pids];
   return async (file, args) => {
@@ -285,6 +297,7 @@ test('default Windows ReparsePoint adapter detects a real junction', async t => 
 });
 
 test('config mutation gates reject coordinates, weak endpoints, incomplete negative flow, and uncorrelated chaos', () => {
+  const example = hostValidationConfig();
   const legacyVersion = structuredClone(example);
   legacyVersion.version = 2;
   assert.throws(() => validateConfig(legacyVersion), /config.version must be 3/);
@@ -365,7 +378,7 @@ test('config mutation gates reject coordinates, weak endpoints, incomplete negat
   assert.throws(() => validateConfig(wrongLauncher), /launchActivity must pin/);
 
   const fakeDownloadRoot = structuredClone(example);
-  fakeDownloadRoot.windows.downloadDirectory = 'C:\\deep-e2e-appdata\\Downloads';
+  fakeDownloadRoot.windows.downloadDirectory = join(tmpdir(), 'deep-e2e-appdata', 'Downloads');
   assert.throws(() => validateConfig(fakeDownloadRoot), /production Downloads/);
 
   const automaticManualFallback = structuredClone(example);
@@ -419,7 +432,8 @@ test('download verifier rejects a source/outside path and reparse file', async (
       ? { isSymbolicLink: () => false }
       : { isSymbolicLink: () => true, isFile: () => true, size: 7 },
     realpath: async path => path,
-    readFile: async () => Buffer.from('fixture')
+    readFile: async () => Buffer.from('fixture'),
+    isReparsePoint: async () => false
   };
   await assert.rejects(
     verifyDownloadedAttachment(join(downloadRoot, 'file.bin'), downloadRoot, sha256('fixture'), fakeFs),
@@ -451,8 +465,13 @@ test('Windows ReparsePoint attribute adapter rejects source, destination, and ma
     realpath: async path => path,
     readFile: async () => Buffer.from('fixture')
   };
+  const destinationRoot = join(tmpdir(), 'isolated', 'Downloads');
   await assert.rejects(
-    verifyDownloadedAttachment('C:\\isolated\\Downloads\\file.bin', 'C:\\isolated\\Downloads', sha256('fixture'), destinationFs),
+    verifyDownloadedAttachment(
+      join(destinationRoot, 'file.bin'),
+      destinationRoot,
+      sha256('fixture'),
+      destinationFs),
     /decrypted destination cannot have the Windows ReparsePoint attribute/
   );
 });
