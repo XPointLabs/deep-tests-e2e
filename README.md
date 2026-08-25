@@ -5,7 +5,6 @@ Golden compatibility fixtures and end-to-end smoke tests for Deep.
 ## Agent Specs
 
 - Start with [`AGENTS.md`](AGENTS.md) before changing fixtures or test flows.
-- Use [`docs/SESSION_PORTING.md`](docs/SESSION_PORTING.md) when adding Session-derived compatibility coverage.
 - Keep these tests as externally visible contract evidence, not implementation-specific unit tests.
 
 ## Local
