@@ -29,6 +29,11 @@ function createPushUnsubscribeSignatureMessage(pubkey, sigTs) {
   return Buffer.from(`UNSUBSCRIBE${String(pubkey).toLowerCase()}${Number(sigTs)}`);
 }
 
+function storageNamespaceSignatureValue(namespace) {
+  const parsed = Number(namespace);
+  return Number.isFinite(parsed) && parsed === 0 ? '' : String(namespace ?? '');
+}
+
 function createPushSigningIdentity() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const publicKeyDer = publicKey.export({ type: 'spki', format: 'der' });
@@ -41,6 +46,10 @@ function createPushSigningIdentity() {
     },
     signPushUnsubscribe(sigTs) {
       return cryptoSign(null, createPushUnsubscribeSignatureMessage(pubkey, sigTs), privateKey).toString('base64');
+    },
+    signStorageRetrieve(namespace, timestamp) {
+      const message = Buffer.from(`retrieve${storageNamespaceSignatureValue(namespace)}${timestamp}`);
+      return cryptoSign(null, message, privateKey).toString('base64');
     }
   };
 }
@@ -78,14 +87,13 @@ function isNoAuthRetrieveNamespace(namespace) {
   return namespace === -10 || (namespace < 0 && (-namespace % 20) === 1);
 }
 
-function createStorageRetrievePayload(overrides = {}) {
+function createStorageRetrievePayload(identity, overrides = {}) {
   const payload = { ...overrides };
   const namespace = payload.namespace === undefined ? undefined : Number(payload.namespace);
   if ((namespace === undefined || !isNoAuthRetrieveNamespace(namespace)) && payload.signature === undefined) {
-    payload.signature = registrationPayloads.pushSubscription.signature;
-  }
-  if (payload.signature !== undefined && payload.timestamp === undefined) {
-    payload.timestamp = Date.now();
+    const timestamp = Number(payload.timestamp ?? Date.now());
+    payload.timestamp = timestamp;
+    payload.signature = identity.signStorageRetrieve(namespace, timestamp);
   }
   return payload;
 }
@@ -119,11 +127,12 @@ test('Deep smoke e2e', async () => {
   const bob = registrationPayloads.accounts.bob;
   assert.equal(alice.sessionId.startsWith('05'), true);
   assert.equal(bob.sessionId.startsWith('05'), true);
+  const smokeIdentity = createPushSigningIdentity();
 
   const offline = messageVectors.vectors.find(vector => vector.id === 'offline-message/simple-v1');
   const nowMs = Date.now();
   const storedOffline = await postJson(urls.storage, '/storage/store', {
-    pubkey: bob.sessionId,
+    pubkey: smokeIdentity.pubkey,
     namespace: offline.namespace,
     timestamp: nowMs,
     ttl: offline.ttlMs,
@@ -132,8 +141,8 @@ test('Deep smoke e2e', async () => {
   assert.match(storedOffline.hash, /^[A-Za-z0-9_-]+$/);
 
   const retrievedOffline = await postJson(urls.storage, '/storage/retrieve', {
-    ...createStorageRetrievePayload({
-      pubkey: bob.sessionId,
+    ...createStorageRetrievePayload(smokeIdentity, {
+      pubkey: smokeIdentity.pubkey,
       namespace: offline.namespace
     })
   });
@@ -157,7 +166,7 @@ test('Deep smoke e2e', async () => {
   writeArtifact('attachment.json', { upload, info });
 
   const group = messageVectors.vectors.find(vector => vector.id === 'group-message/simple-v1');
-  const groupPubkey = `group:${group.groupId}`;
+  const groupPubkey = smokeIdentity.pubkey;
   const storedGroup = await postJson(urls.storage, '/storage/store', {
     pubkey: groupPubkey,
     namespace: group.namespace,
@@ -166,7 +175,7 @@ test('Deep smoke e2e', async () => {
     data: Buffer.from(group.bodyBase64Url, 'base64url').toString('base64')
   });
   const retrievedGroup = await postJson(urls.storage, '/storage/retrieve', {
-    ...createStorageRetrievePayload({
+    ...createStorageRetrievePayload(smokeIdentity, {
       pubkey: groupPubkey,
       namespace: group.namespace
     })
@@ -181,7 +190,7 @@ test('Deep smoke e2e', async () => {
   );
   writeArtifact('group-message.json', { storedGroup, retrievedGroup });
 
-  const pushSigningIdentity = createPushSigningIdentity();
+  const pushSigningIdentity = smokeIdentity;
   const pushSubscription = createCurrentPushSubscriptionPayload(pushSigningIdentity);
   const push = await postJson(urls.push, '/subscribe', pushSubscription);
   assert.equal(push.success, true);
@@ -236,13 +245,21 @@ test('Deep smoke e2e', async () => {
   writeArtifact('reward-query.json', { node, rewards });
 
   const routerStatus = await getJson(urls.router, '/status');
-  assert.equal(routerStatus.router.state, 'running');
-  const rpcStatus = await postJson(urls.router, '/api/session/rpc', {
-    id: 'smoke-status',
-    method: 'status',
-    payload: {}
+  assert.equal(routerStatus.router.state, 'privacy-routing-disabled');
+  assert.equal(routerStatus.router.privacyRouting, false);
+  const disabledRpcResponse = await fetch(new URL('/api/session/rpc', urls.router), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: 'smoke-status',
+      method: 'status',
+      payload: {}
+    })
   });
-  assert.equal(rpcStatus.success, true);
-  writeArtifact('router-status.json', { routerStatus, rpcStatus });
+  assert.equal(disabledRpcResponse.status, 404);
+  writeArtifact('router-status.json', {
+    routerStatus,
+    disabledRpcStatus: disabledRpcResponse.status
+  });
 });
 
