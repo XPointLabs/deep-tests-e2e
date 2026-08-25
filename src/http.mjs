@@ -57,6 +57,16 @@ export async function postBytes(baseUrl, path, bytes, contentType = 'application
   return response.json();
 }
 
+export async function putBytes(baseUrl, path, bytes, contentType = 'application/octet-stream', headers = {}) {
+  const response = await fetch(new URL(path, baseUrl), {
+    method: 'PUT',
+    headers: { ...headers, 'content-type': contentType },
+    body: bytes
+  });
+  await assertOk(response, `PUT ${path}`);
+  return response.json();
+}
+
 export async function getBytes(baseUrl, path) {
   const response = await fetch(new URL(path, baseUrl));
   await assertOk(response, `GET ${path}`);

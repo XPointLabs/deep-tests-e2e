@@ -3,11 +3,13 @@ import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import { registrationPayloads } from '../../src/fixtures.mjs';
+import { createAvatarSigningIdentity } from '../../src/avatar-auth.mjs';
 import {
   getBytes,
   getJson,
   postBytes,
   postJson,
+  putBytes,
   urls,
   writeArtifact
 } from '../../src/http.mjs';
@@ -411,7 +413,9 @@ test(
     );
     assert.ok(duplicateUploadInfoAfterExtend.expires >= Math.max(...duplicateUploads.map(upload => upload.expires)));
 
-    const avatarOwner = `${storagePubkey}-load-avatar`;
+    const avatarIdentity = createAvatarSigningIdentity();
+    const avatarOwner = avatarIdentity.sessionId;
+    const avatarPath = `/avatar/${encodeURIComponent(avatarOwner)}`;
     const avatarSamples = [];
     const avatarPayloads = [
       {
@@ -427,7 +431,13 @@ test(
     for (const payload of avatarPayloads) {
       avatarUploads.push(await measure(
         avatarSamples,
-        () => postBytes(urls.file, `/avatar/${encodeURIComponent(avatarOwner)}`, payload.bytes, payload.contentType)
+        () => putBytes(
+          urls.file,
+          avatarPath,
+          payload.bytes,
+          payload.contentType,
+          avatarIdentity.authorizationHeaders(avatarPath, payload.bytes)
+        )
       ));
     }
     assert.equal(avatarUploads.length, loadPlan.avatarUpdateAttempts);

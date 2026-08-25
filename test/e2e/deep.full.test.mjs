@@ -5,12 +5,13 @@ import {
   attachmentVectors,
   registrationPayloads
 } from '../../src/fixtures.mjs';
+import { createAvatarSigningIdentity } from '../../src/avatar-auth.mjs';
 import {
   getBytes,
   getJson,
   postBytes,
   postJson,
-  putJson,
+  putBytes,
   urls,
   writeArtifact
 } from '../../src/http.mjs';
@@ -181,40 +182,6 @@ function createCurrentPushSubscriptionPayload(overrides = {}) {
     signature: storageSigningIdentity.signPushSubscribe(storageSigningIdentity.directPubkey, sigTs, wantData, namespaces),
     service_info: serviceInfo
   };
-}
-
-function createStorageDeleteAllPayload(pubkey, namespace) {
-  return {
-    pubkey,
-    timestamp: Date.now(),
-    signature: registrationPayloads.pushSubscription.signature,
-    ...(namespace === undefined ? {} : { namespace })
-  };
-}
-
-function createStorageStorePayload(overrides = {}) {
-  const payload = { ...overrides };
-  const namespace = Number(payload.namespace ?? 0);
-  if (namespace % 10 !== 0 && payload.signature === undefined) {
-    payload.signature = registrationPayloads.pushSubscription.signature;
-  }
-  return payload;
-}
-
-function isNoAuthRetrieveNamespace(namespace) {
-  return namespace === -10 || (namespace < 0 && (-namespace % 20) === 1);
-}
-
-function createStorageRetrievePayload(overrides = {}) {
-  const payload = { ...overrides };
-  const namespace = payload.namespace === undefined ? undefined : Number(payload.namespace);
-  if ((namespace === undefined || !isNoAuthRetrieveNamespace(namespace)) && payload.signature === undefined) {
-    payload.signature = registrationPayloads.pushSubscription.signature;
-  }
-  if (payload.signature !== undefined && payload.timestamp === undefined) {
-    payload.timestamp = Date.now();
-  }
-  return payload;
 }
 
 function createSignedStorageStorePayload(identity, overrides = {}) {
@@ -562,8 +529,12 @@ test('Deep full e2e compatibility extensions', async () => {
   assert.equal(subaccountAfterUnrevoke.messages.length, 1);
   assert.equal(subaccountAfterUnrevoke.messages[0].hash, revokePrivate.hash);
 
-  const sequencePubkey = `${pubkey}-sequence`;
+  const sequenceIdentity = createTestStorageSigningIdentity();
+  const sequencePubkey = sequenceIdentity.directPubkey;
   const sequenceTimestamp = Date.now();
+  const firstRetrieveTimestamp = sequenceTimestamp + 2;
+  const deleteAllTimestamp = sequenceTimestamp + 3;
+  const finalRetrieveTimestamp = sequenceTimestamp + 4;
   const sequence = await postJson(urls.storage, '/storage/sequence', {
     requests: [
       {
@@ -579,8 +550,8 @@ test('Deep full e2e compatibility extensions', async () => {
         method: 'retrieve',
         params: {
           pubkey: sequencePubkey,
-          timestamp: Date.now(),
-          signature: registrationPayloads.pushSubscription.signature
+          timestamp: firstRetrieveTimestamp,
+          signature: sequenceIdentity.signRetrieve(0, firstRetrieveTimestamp)
         }
       },
       {
@@ -596,16 +567,16 @@ test('Deep full e2e compatibility extensions', async () => {
         method: 'delete_all',
         params: {
           pubkey: sequencePubkey,
-          timestamp: Date.now(),
-          signature: registrationPayloads.pushSubscription.signature
+          timestamp: deleteAllTimestamp,
+          signature: sequenceIdentity.signDeleteAll(undefined, deleteAllTimestamp)
         }
       },
       {
         method: 'retrieve',
         params: {
           pubkey: sequencePubkey,
-          timestamp: Date.now(),
-          signature: registrationPayloads.pushSubscription.signature
+          timestamp: finalRetrieveTimestamp,
+          signature: sequenceIdentity.signRetrieve(0, finalRetrieveTimestamp)
         }
       }
     ]
@@ -634,9 +605,17 @@ test('Deep full e2e compatibility extensions', async () => {
   assert.equal(extendedUpload.uploaded, uploadOneInfo.uploaded);
   assert.ok(extendedUpload.expires >= uploadOneInfo.expires);
 
-  const avatarOwner = `${pubkey}-avatar`;
+  const avatarIdentity = createAvatarSigningIdentity();
+  const avatarOwner = avatarIdentity.sessionId;
+  const avatarPath = `/avatar/${encodeURIComponent(avatarOwner)}`;
   const avatarOneBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
-  const avatarOne = await postBytes(urls.file, `/avatar/${encodeURIComponent(avatarOwner)}`, avatarOneBytes, 'image/png');
+  const avatarOne = await putBytes(
+    urls.file,
+    avatarPath,
+    avatarOneBytes,
+    'image/png',
+    avatarIdentity.authorizationHeaders(avatarPath, avatarOneBytes)
+  );
   const avatarOneInfo = await getJson(urls.file, `/avatar/${encodeURIComponent(avatarOwner)}/info`);
   const avatarOneDownloaded = await getBytes(urls.file, `/avatar/${encodeURIComponent(avatarOwner)}`);
   assert.equal(avatarOne.sessionId, avatarOwner);
@@ -646,7 +625,13 @@ test('Deep full e2e compatibility extensions', async () => {
   assert.deepEqual(avatarOneDownloaded, avatarOneBytes);
 
   const avatarTwoBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x02]);
-  const avatarTwo = await postBytes(urls.file, `/avatar/${encodeURIComponent(avatarOwner)}`, avatarTwoBytes, 'image/jpeg');
+  const avatarTwo = await putBytes(
+    urls.file,
+    avatarPath,
+    avatarTwoBytes,
+    'image/jpeg',
+    avatarIdentity.authorizationHeaders(avatarPath, avatarTwoBytes)
+  );
   const avatarTwoInfo = await getJson(urls.file, `/avatar/${encodeURIComponent(avatarOwner)}/info`);
   const avatarTwoDownloaded = await getBytes(urls.file, `/avatar/${encodeURIComponent(avatarOwner)}`);
   assert.equal(avatarTwo.sessionId, avatarOwner);
@@ -679,10 +664,25 @@ test('Deep full e2e compatibility extensions', async () => {
     port: 8443,
     uuid: '00000000-0000-4000-8000-000000000002'
   };
-  const updated = await putJson(urls.registry, `/api/nodes/${registered.nodeId}/transport`, nextTransport);
-  const profile = await getJson(urls.registry, `/api/nodes/${registered.nodeId}/transport-profile`);
-  assert.equal(updated.endpoint, 'router-updated:8443');
-  assert.equal(profile.bundle.uuid, nextTransport.uuid);
+  const reregistered = await postJson(urls.registry, '/api/nodes/register', {
+    ...registrationPayloads.nodeRegistration,
+    transport: nextTransport
+  });
+  assert.equal(reregistered.revision, registered.revision + 1);
+  assert.equal(reregistered.transport.host, nextTransport.host);
+  assert.equal(reregistered.transport.uuid, nextTransport.uuid);
+
+  const publicNode = await getJson(urls.registry, `/api/nodes/${registered.nodeId}`);
+  assert.equal(publicNode.transport, undefined);
+
+  const legacyMutation = await fetch(new URL(`/api/nodes/${registered.nodeId}/transport`, urls.registry), {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(nextTransport)
+  });
+  const legacyProfile = await fetch(new URL(`/api/nodes/${registered.nodeId}/transport-profile`, urls.registry));
+  assert.equal(legacyMutation.status, 404);
+  assert.equal(legacyProfile.status, 404);
 
   writeArtifact('full-suite.json', {
     afterFirst,
@@ -719,7 +719,9 @@ test('Deep full e2e compatibility extensions', async () => {
     avatarTwoInfo,
     firstPush,
     secondPush,
-    updated,
-    profile
+    reregistered,
+    publicNode,
+    legacyMutationStatus: legacyMutation.status,
+    legacyProfileStatus: legacyProfile.status
   });
 });
