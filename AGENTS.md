@@ -1,110 +1,34 @@
-﻿# Agent Specification - Deep E2E Tests
+# Deep E2E Tests agent rules
 
-Last updated: 2026-06-10.
+The workspace rules in `../AGENTS.md` apply. This file contains only black-box E2E deltas.
 
-## Mission
+## Owns
 
-`deep-tests-e2e` owns externally visible compatibility fixtures and end-to-end validation for Deep. It proves that independent repos compose into a working messenger stack and that Session-derived service contracts remain stable.
+- Deterministic service-boundary fixtures and their schema validation.
+- Black-box HTTP/runtime smoke, full and load tests across independently built services.
+- Machine-readable failure/evidence output consumed by DevOps gates.
 
-## Source Of Truth
+Compose orchestration belongs in `deep-devops`. MAUI Android/Windows physical automation belongs
+in `deep-client-maui/eng`; this repo may consume its sanitized result but does not simulate it.
 
-- DevOps orchestration: `../deep-devops/AGENTS.md`.
-- Session porting rules: `docs/SESSION_PORTING.md`.
-- Current fixtures and helper modules under `src/` and `test/`.
-- Workspace entry point: `../prompts/00_Agent_Entry_Point.md`.
+## Repository rules
 
-## Ownership Boundaries
+- Test public Deep-native contracts, not implementation internals or historical Session behavior.
+- Every test must prove it contacted the intended real service; a local fake cannot satisfy an E2E
+  or release assertion.
+- Fixtures are deterministic, order-independent and safe with `--test-concurrency=1`.
+- Cover a failure, replay or idempotency path for release-critical flows.
+- Never weaken an assertion into a warning to accommodate temporary drift.
+- Evidence is bounded, machine-readable and free of secrets, message/file contents and private IDs.
+- Document required services and environment variables when coverage changes.
 
-Owned here:
-
-- `src/fixtures.mjs`, `src/http.mjs`.
-- `scripts/validate-fixtures.mjs`, `scripts/runtime-checks.mjs`.
-- `test/compat/*` contract fixture tests.
-- `test/e2e/*` smoke, full, and load tests.
-
-Not owned here:
-
-- Service implementation details.
-- Compose orchestration and release gates.
-- Protocol codec internals.
-
-## Test Philosophy
-
-Tests here should describe contracts at service boundaries. They should be stable across implementation rewrites and suitable as migration evidence from Session to Deep.
-
-Prefer:
-
-- black-box HTTP assertions,
-- deterministic fixtures,
-- explicit runtime health/stats checks,
-- artifact output that DevOps gates can consume.
-
-Avoid:
-
-- reaching into service internals,
-- test ordering that hides shared-state coupling,
-- weakening assertions to accommodate temporary implementation drift.
-
-## New Deep Solution Rules
-
-When adding a Deep-specific flow, include:
-
-- required services and environment variables,
-- fixture setup,
-- success path,
-- one failure or idempotency path where relevant,
-- runtime stats or artifact evidence if the flow is release-critical.
-
-## Session Compatibility Rules
-
-When adding Session-derived behavior:
-
-- cite the upstream service/client source in comments or docs,
-- add fixture validation if the payload shape is stable,
-- preserve upstream status/error shape where externally visible,
-- document accepted deviations in `docs/SESSION_PORTING.md`.
-
-## Required Verification
-
-Fixture-only:
+## Verify
 
 ```powershell
 npm run fixtures:validate
 npm run compat
-```
-
-Against a running stack:
-
-```powershell
 npm run ci:smoke
-npm run ci:full
-npm run e2e:load
 ```
 
-Most agents should run these through `deep-devops/scripts/test-env.ps1` so compose state and artifacts are captured.
-
-## Acceptance Gates
-
-A test change is complete only when:
-
-- fixtures are deterministic,
-- tests can run with `--test-concurrency=1`,
-- new env vars are documented,
-- artifacts remain machine-readable JSON where consumed by DevOps,
-- failure messages identify the service/contract that broke.
-
-## Stop-The-Line Conditions
-
-- A fixture no longer matches the documented Session-visible contract.
-- A test passes without contacting the intended service.
-- Shared mutable state leaks between smoke/full/load tests.
-- A release-critical assertion is replaced with a warning.
-- Secrets are written into test artifacts.
-
-## Agent Workflow
-
-1. Read this file and `docs/SESSION_PORTING.md`.
-2. Identify whether the change is fixture, compat, smoke, full, or load.
-3. Update fixtures before implementation-specific expectations.
-4. Run focused npm scripts or the DevOps harness.
-5. Update README/docs when coverage or required env vars change.
+Run `npm run ci:full` and `npm run e2e:load` for affected full/load behavior. Prefer the DevOps
+`test-env.ps1` harness when Docker lifecycle and evidence capture are part of the claim.
