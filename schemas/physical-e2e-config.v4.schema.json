@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deep.example/schemas/physical-e2e-config.v4.schema.json",
+  "title": "Deep physical Android-Windows release-critical harness config v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "compose", "android", "windows", "limits", "selectors", "flows"],
+  "properties": {
+    "version": { "const": 4 },
+    "compose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "project", "services", "endpointPins"],
+      "properties": {
+        "file": { "type": "string", "minLength": 3, "maxLength": 260 },
+        "project": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{2,62}$" },
+        "services": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{1,62}$" } },
+        "endpointPins": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/endpointPin" } }
+      }
+    },
+    "android": { "$ref": "#/$defs/android" },
+    "windows": { "$ref": "#/$defs/windows" },
+    "limits": { "$ref": "#/$defs/limits" },
+    "selectors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["android", "windows"],
+      "properties": {
+        "android": { "$ref": "#/$defs/androidSelectorMap" },
+        "windows": { "$ref": "#/$defs/windowsSelectorMap" }
+      }
+    },
+    "flows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["offlineAccountCreate", "offlineAccountRestore", "reciprocalContact", "windowsToAndroidText", "androidToWindowsText", "smallClosedGroup", "coldRestartVerify", "longOfflineRetry"],
+      "properties": {
+        "offlineAccountCreate": { "$ref": "#/$defs/flow" },
+        "offlineAccountRestore": { "$ref": "#/$defs/flow" },
+        "reciprocalContact": { "$ref": "#/$defs/flow" },
+        "windowsToAndroidText": { "$ref": "#/$defs/flow" },
+        "androidToWindowsText": { "$ref": "#/$defs/flow" },
+        "smallClosedGroup": { "$ref": "#/$defs/flow" },
+        "coldRestartVerify": { "$ref": "#/$defs/flow" },
+        "longOfflineRetry": { "$ref": "#/$defs/flow" }
+      }
+    }
+  },
+  "$defs": {
+    "endpointPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "url", "expectedStatus", "expectedBuildSha256"],
+      "properties": {
+        "service": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{1,62}$" },
+        "url": { "type": "string", "pattern": "^https?://(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::[0-9]{1,5})?/" },
+        "expectedStatus": { "const": 200 },
+        "expectedBuildSha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "androidDriver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "capabilities"],
+      "properties": {
+        "url": { "type": "string", "pattern": "^https?://(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::[0-9]{1,5})?" },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["alwaysMatch"],
+          "properties": {
+            "alwaysMatch": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["platformName", "appium:automationName"],
+              "properties": {
+                "platformName": { "const": "Android" },
+                "appium:automationName": { "const": "UiAutomator2" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "windowsDriver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "capabilities"],
+      "properties": {
+        "url": { "type": "string", "pattern": "^https?://(?:127\\.0\\.0\\.1|localhost|\\[::1\\])(?::[0-9]{1,5})?" },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["alwaysMatch"],
+          "properties": {
+            "alwaysMatch": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["platformName"],
+              "properties": { "platformName": { "const": "Windows" } }
+            }
+          }
+        }
+      }
+    },
+    "android": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serial", "packageName", "launchActivity", "apkPath", "identityPattern", "driver"],
+      "properties": {
+        "serial": { "const": "192.168.1.45:43337" },
+        "packageName": { "const": "network.xpoint.deep.e2e" },
+        "launchActivity": { "const": "network.xpoint.deep.DeepLauncher" },
+        "apkPath": { "type": "string", "minLength": 3, "maxLength": 260 },
+        "identityPattern": { "const": "^deep1[023456789acdefghjklmnpqrstuvwxyz]{85}$" },
+        "driver": { "$ref": "#/$defs/androidDriver" }
+      }
+    },
+    "windows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exePath", "processName", "appDataRoot", "launchTimeoutMs", "launchPollMs", "identityPattern", "driver"],
+      "properties": {
+        "exePath": { "type": "string", "minLength": 3, "maxLength": 260 },
+        "processName": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.exe$" },
+        "appDataRoot": { "type": "string", "minLength": 3, "maxLength": 260 },
+        "launchTimeoutMs": { "type": "integer", "minimum": 1000, "maximum": 60000 },
+        "launchPollMs": { "type": "integer", "minimum": 50, "maximum": 1000 },
+        "identityPattern": { "const": "^deep1[023456789acdefghjklmnpqrstuvwxyz]{85}$" },
+        "driver": { "$ref": "#/$defs/windowsDriver" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runTimeoutMs", "cleanupTimeoutMs", "maxActionsPerFlow", "maxTotalActions", "maxEvidenceBytes", "offlineProbeTimeoutMs", "offlineProbePollMs", "longOfflineMs"],
+      "properties": {
+        "runTimeoutMs": { "type": "integer", "minimum": 60000, "maximum": 1800000 },
+        "cleanupTimeoutMs": { "type": "integer", "minimum": 10000, "maximum": 120000 },
+        "maxActionsPerFlow": { "type": "integer", "minimum": 8, "maximum": 64 },
+        "maxTotalActions": { "type": "integer", "minimum": 64, "maximum": 256 },
+        "maxEvidenceBytes": { "type": "integer", "minimum": 16384, "maximum": 262144 },
+        "offlineProbeTimeoutMs": { "type": "integer", "minimum": 1000, "maximum": 60000 },
+        "offlineProbePollMs": { "type": "integer", "minimum": 100, "maximum": 5000 },
+        "longOfflineMs": { "type": "integer", "minimum": 30000, "maximum": 600000 }
+      }
+    },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["using", "value"],
+      "properties": {
+        "using": { "enum": ["accessibility id", "id"] },
+        "value": { "type": "string", "minLength": 1, "maxLength": 160 }
+      }
+    },
+    "androidSelectorMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pageConversations", "profileSettings", "ownIdentity", "settingsBack", "newConversation", "newMessage", "identityInput", "aliasInput", "identitySubmit", "conversationRow", "contactPending", "contactVerified", "chatBack", "messageComposer", "messageSend", "messageBody", "deliveryPending", "deliveryDelivered", "groups", "groupInviteRow", "groupInviteAccept", "groupStateActive", "groupStateRemoved", "groupMessageComposer", "groupMessageSend", "groupMessageBody"],
+      "properties": {
+        "pageConversations": { "$ref": "#/$defs/selector" }, "profileSettings": { "$ref": "#/$defs/selector" }, "ownIdentity": { "$ref": "#/$defs/selector" }, "settingsBack": { "$ref": "#/$defs/selector" }, "newConversation": { "$ref": "#/$defs/selector" }, "newMessage": { "$ref": "#/$defs/selector" }, "identityInput": { "$ref": "#/$defs/selector" }, "aliasInput": { "$ref": "#/$defs/selector" }, "identitySubmit": { "$ref": "#/$defs/selector" }, "conversationRow": { "$ref": "#/$defs/selector" }, "contactPending": { "$ref": "#/$defs/selector" }, "contactVerified": { "$ref": "#/$defs/selector" }, "chatBack": { "$ref": "#/$defs/selector" }, "messageComposer": { "$ref": "#/$defs/selector" }, "messageSend": { "$ref": "#/$defs/selector" }, "messageBody": { "$ref": "#/$defs/selector" }, "deliveryPending": { "$ref": "#/$defs/selector" }, "deliveryDelivered": { "$ref": "#/$defs/selector" }, "groups": { "$ref": "#/$defs/selector" }, "groupInviteRow": { "$ref": "#/$defs/selector" }, "groupInviteAccept": { "$ref": "#/$defs/selector" }, "groupStateActive": { "$ref": "#/$defs/selector" }, "groupStateRemoved": { "$ref": "#/$defs/selector" }, "groupMessageComposer": { "$ref": "#/$defs/selector" }, "groupMessageSend": { "$ref": "#/$defs/selector" }, "groupMessageBody": { "$ref": "#/$defs/selector" }
+      }
+    },
+    "windowsSelectorMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["welcomeDisplayName", "welcomeCreate", "welcomeRestore", "welcomeRestorePhrase", "welcomeRestoreSubmit", "conversationsRoot", "networkCallbackCount", "profileSettings", "ownIdentity", "recoveryPhraseReveal", "recoveryPhraseValue", "settingsBack", "newConversation", "newMessage", "identityInput", "aliasInput", "identitySubmit", "conversationRow", "contactPending", "contactVerified", "messageComposer", "messageSend", "messageBody", "deliveryPending", "deliveryDelivered", "groups", "groupCreate", "groupNameInput", "groupMemberDeepIdInput", "groupAddMember", "groupSubmit", "groupStatePending", "groupStateActive", "groupRow", "groupMessageComposer", "groupMessageSend", "groupMessageBody", "groupMembers", "groupMemberRow", "groupRemove", "groupRemoveConfirm", "groupMemberStateRemoved"],
+      "properties": {
+        "welcomeDisplayName": { "$ref": "#/$defs/selector" }, "welcomeCreate": { "$ref": "#/$defs/selector" }, "welcomeRestore": { "$ref": "#/$defs/selector" }, "welcomeRestorePhrase": { "$ref": "#/$defs/selector" }, "welcomeRestoreSubmit": { "$ref": "#/$defs/selector" }, "conversationsRoot": { "$ref": "#/$defs/selector" }, "networkCallbackCount": { "$ref": "#/$defs/selector" }, "profileSettings": { "$ref": "#/$defs/selector" }, "ownIdentity": { "$ref": "#/$defs/selector" }, "recoveryPhraseReveal": { "$ref": "#/$defs/selector" }, "recoveryPhraseValue": { "$ref": "#/$defs/selector" }, "settingsBack": { "$ref": "#/$defs/selector" }, "newConversation": { "$ref": "#/$defs/selector" }, "newMessage": { "$ref": "#/$defs/selector" }, "identityInput": { "$ref": "#/$defs/selector" }, "aliasInput": { "$ref": "#/$defs/selector" }, "identitySubmit": { "$ref": "#/$defs/selector" }, "conversationRow": { "$ref": "#/$defs/selector" }, "contactPending": { "$ref": "#/$defs/selector" }, "contactVerified": { "$ref": "#/$defs/selector" }, "messageComposer": { "$ref": "#/$defs/selector" }, "messageSend": { "$ref": "#/$defs/selector" }, "messageBody": { "$ref": "#/$defs/selector" }, "deliveryPending": { "$ref": "#/$defs/selector" }, "deliveryDelivered": { "$ref": "#/$defs/selector" }, "groups": { "$ref": "#/$defs/selector" }, "groupCreate": { "$ref": "#/$defs/selector" }, "groupNameInput": { "$ref": "#/$defs/selector" }, "groupMemberDeepIdInput": { "$ref": "#/$defs/selector" }, "groupAddMember": { "$ref": "#/$defs/selector" }, "groupSubmit": { "$ref": "#/$defs/selector" }, "groupStatePending": { "$ref": "#/$defs/selector" }, "groupStateActive": { "$ref": "#/$defs/selector" }, "groupRow": { "$ref": "#/$defs/selector" }, "groupMessageComposer": { "$ref": "#/$defs/selector" }, "groupMessageSend": { "$ref": "#/$defs/selector" }, "groupMessageBody": { "$ref": "#/$defs/selector" }, "groupMembers": { "$ref": "#/$defs/selector" }, "groupMemberRow": { "$ref": "#/$defs/selector" }, "groupRemove": { "$ref": "#/$defs/selector" }, "groupRemoveConfirm": { "$ref": "#/$defs/selector" }, "groupMemberStateRemoved": { "$ref": "#/$defs/selector" }
+      }
+    },
+    "flow": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/action" } },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "type", "purpose"],
+      "properties": {
+        "target": { "enum": ["android", "windows", "system"] },
+        "type": { "enum": ["waitVisible", "setValue", "click", "clickText", "waitText", "assertExactText", "assertNotTextStable", "captureIdentity", "captureRecoveryPhrase", "assertIdentityMatches", "resetWindowsProfile", "restoreServicesOnline", "takeServicesOffline", "waitLongOffline", "restartClients"] },
+        "purpose": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{2,79}$" },
+        "selector": { "type": "object", "additionalProperties": false, "required": ["role"], "properties": { "role": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*$" } } },
+        "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000 },
+        "value": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "contains": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "stabilityMs": { "type": "integer", "minimum": 1000, "maximum": 60000 },
+        "saveAs": { "enum": ["actualIdentityWindows", "actualIdentityAndroid", "windowsRecoveryPhrase"] },
+        "matches": { "enum": ["{{actualIdentityWindows}}", "{{actualIdentityAndroid}}"] }
+      }
+    }
+  }
+}

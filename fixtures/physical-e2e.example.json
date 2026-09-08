@@ -1,15 +1,15 @@
 {
-  "version": 3,
+  "version": 4,
   "compose": {
     "file": "C:\\Work\\DeepSession\\XPointLabs\\deep-devops\\docker-compose.yml",
-    "project": "deep-physical-e2e",
-    "services": ["router", "registry", "storage", "file", "push"],
+    "project": "deep-uat",
+    "services": ["router", "registry", "mailbox", "invite", "group-control"],
     "endpointPins": [
-      { "service": "router", "url": "http://127.0.0.1:18081/health/ready", "expectedStatus": 200 },
-      { "service": "registry", "url": "http://127.0.0.1:18080/health/ready", "expectedStatus": 200 },
-      { "service": "storage", "url": "http://127.0.0.1:18100/health/ready", "expectedStatus": 200 },
-      { "service": "file", "url": "http://127.0.0.1:18101/health/ready", "expectedStatus": 200 },
-      { "service": "push", "url": "http://127.0.0.1:18102/health/ready", "expectedStatus": 200 }
+      { "service": "router", "url": "http://127.0.0.1:18081/health/ready", "expectedStatus": 200, "expectedBuildSha256": "1111111111111111111111111111111111111111111111111111111111111111" },
+      { "service": "registry", "url": "http://127.0.0.1:18080/health/ready", "expectedStatus": 200, "expectedBuildSha256": "2222222222222222222222222222222222222222222222222222222222222222" },
+      { "service": "mailbox", "url": "http://127.0.0.1:18100/health/ready", "expectedStatus": 200, "expectedBuildSha256": "3333333333333333333333333333333333333333333333333333333333333333" },
+      { "service": "invite", "url": "http://127.0.0.1:18101/health/ready", "expectedStatus": 200, "expectedBuildSha256": "4444444444444444444444444444444444444444444444444444444444444444" },
+      { "service": "group-control", "url": "http://127.0.0.1:18102/health/ready", "expectedStatus": 200, "expectedBuildSha256": "5555555555555555555555555555555555555555555555555555555555555555" }
     ]
   },
   "android": {
@@ -17,127 +17,155 @@
     "packageName": "network.xpoint.deep.e2e",
     "launchActivity": "network.xpoint.deep.DeepLauncher",
     "apkPath": "C:\\builds\\Deep.E2E.apk",
-    "attachmentDirectory": "/sdcard/Download",
-    "identityPattern": "^05[0-9a-fA-F]{64}$",
+    "identityPattern": "^deep1[023456789acdefghjklmnpqrstuvwxyz]{85}$",
     "driver": {
       "url": "http://127.0.0.1:4723",
-      "capabilities": {
-        "alwaysMatch": {
-          "platformName": "Android",
-          "appium:automationName": "UiAutomator2"
-        }
-      }
+      "capabilities": { "alwaysMatch": { "platformName": "Android", "appium:automationName": "UiAutomator2" } }
     }
   },
   "windows": {
     "exePath": "C:\\builds\\Deep.E2E.Windows.exe",
     "processName": "Deep.E2E.Windows.exe",
     "appDataRoot": "C:\\deep-e2e-appdata",
-    "downloadDirectory": "C:\\Users\\Mr. X\\Downloads\\Deep",
     "launchTimeoutMs": 15000,
     "launchPollMs": 250,
-    "identityPattern": "^05[0-9a-fA-F]{64}$",
+    "identityPattern": "^deep1[023456789acdefghjklmnpqrstuvwxyz]{85}$",
     "driver": {
       "url": "http://127.0.0.1:4723",
-      "capabilities": {
-        "alwaysMatch": {
-          "platformName": "Windows"
-        }
-      }
+      "capabilities": { "alwaysMatch": { "platformName": "Windows" } }
     }
   },
-  "attachmentPath": "C:\\fixtures\\deep-e2e-attachment.bin",
+  "limits": {
+    "runTimeoutMs": 900000,
+    "cleanupTimeoutMs": 60000,
+    "maxActionsPerFlow": 48,
+    "maxTotalActions": 192,
+    "maxEvidenceBytes": 131072,
+    "offlineProbeTimeoutMs": 30000,
+    "offlineProbePollMs": 500,
+    "longOfflineMs": 60000
+  },
   "selectors": {
     "android": {
       "pageConversations": { "using": "id", "value": "network.xpoint.deep.e2e:id/Page.Conversations" },
-      "conversationsRoot": { "using": "id", "value": "network.xpoint.deep.e2e:id/Conversations.Root" },
       "profileSettings": { "using": "id", "value": "network.xpoint.deep.e2e:id/Conversations.ProfileSettings" },
+      "ownIdentity": { "using": "id", "value": "network.xpoint.deep.e2e:id/Settings.DeepId" },
+      "settingsBack": { "using": "id", "value": "network.xpoint.deep.e2e:id/Settings.Back" },
       "newConversation": { "using": "id", "value": "network.xpoint.deep.e2e:id/Conversations.NewConversationTop" },
       "newMessage": { "using": "id", "value": "network.xpoint.deep.e2e:id/StartConversation.NewMessage" },
-      "ownIdentity": { "using": "id", "value": "network.xpoint.deep.e2e:id/Settings.SessionId" },
-      "settingsBack": { "using": "id", "value": "network.xpoint.deep.e2e:id/Settings.Back" },
-      "identityInput": { "using": "id", "value": "network.xpoint.deep.e2e:id/NewConversation.SessionId" },
+      "identityInput": { "using": "id", "value": "network.xpoint.deep.e2e:id/NewConversation.DeepId" },
       "aliasInput": { "using": "id", "value": "network.xpoint.deep.e2e:id/NewConversation.DisplayName" },
       "identitySubmit": { "using": "id", "value": "network.xpoint.deep.e2e:id/NewConversation.Start" },
-      "identityError": { "using": "id", "value": "network.xpoint.deep.e2e:id/NewConversation.Error" },
-      "identityBack": { "using": "id", "value": "network.xpoint.deep.e2e:id/NewConversation.Back" },
       "conversationRow": { "using": "id", "value": "network.xpoint.deep.e2e:id/Conversations.ConversationRow" },
+      "contactPending": { "using": "id", "value": "network.xpoint.deep.e2e:id/Contact.State.Pending" },
+      "contactVerified": { "using": "id", "value": "network.xpoint.deep.e2e:id/Contact.State.Verified" },
       "chatBack": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.Back" },
       "messageComposer": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.Draft" },
       "messageSend": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.Send" },
       "messageBody": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.MessageBody" },
-      "deliveryStatus": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.DeliveryStatus" },
-      "manualRetry": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.Retry" },
-      "attachmentMenu": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.Attach" },
-      "attachmentFile": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.PickFile" },
-      "pickerDownloads": { "using": "id", "value": "android:id/title" },
-      "pickerFile": { "using": "id", "value": "android:id/title" },
-      "stagedAttachmentFilename": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.StagedAttachmentFilename" }
+      "deliveryPending": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.Delivery.Queued" },
+      "deliveryDelivered": { "using": "id", "value": "network.xpoint.deep.e2e:id/Chat.Delivery.Delivered" },
+      "groups": { "using": "id", "value": "network.xpoint.deep.e2e:id/Conversations.Groups" },
+      "groupInviteRow": { "using": "id", "value": "network.xpoint.deep.e2e:id/Groups.InviteRow" },
+      "groupInviteAccept": { "using": "id", "value": "network.xpoint.deep.e2e:id/GroupInvite.Accept" },
+      "groupStateActive": { "using": "id", "value": "network.xpoint.deep.e2e:id/Group.State.Active" },
+      "groupStateRemoved": { "using": "id", "value": "network.xpoint.deep.e2e:id/Group.State.Removed" },
+      "groupMessageComposer": { "using": "id", "value": "network.xpoint.deep.e2e:id/GroupChat.Draft" },
+      "groupMessageSend": { "using": "id", "value": "network.xpoint.deep.e2e:id/GroupChat.Send" },
+      "groupMessageBody": { "using": "id", "value": "network.xpoint.deep.e2e:id/GroupChat.MessageBody" }
     },
     "windows": {
       "welcomeDisplayName": { "using": "accessibility id", "value": "Welcome.DisplayName" },
       "welcomeCreate": { "using": "accessibility id", "value": "Welcome.Create" },
+      "welcomeRestore": { "using": "accessibility id", "value": "Welcome.Restore" },
+      "welcomeRestorePhrase": { "using": "accessibility id", "value": "Restore.RecoveryPhrase" },
+      "welcomeRestoreSubmit": { "using": "accessibility id", "value": "Restore.Submit" },
       "conversationsRoot": { "using": "accessibility id", "value": "Conversations.Root" },
+      "networkCallbackCount": { "using": "accessibility id", "value": "PhysicalE2E.NetworkCallbackCount" },
       "profileSettings": { "using": "accessibility id", "value": "DesktopWorkspace.ProfileSettings" },
+      "ownIdentity": { "using": "accessibility id", "value": "Settings.DeepId" },
+      "recoveryPhraseReveal": { "using": "accessibility id", "value": "Settings.RecoveryPhraseReveal" },
+      "recoveryPhraseValue": { "using": "accessibility id", "value": "Settings.RecoveryPhraseValue" },
+      "settingsBack": { "using": "accessibility id", "value": "Settings.Back" },
       "newConversation": { "using": "accessibility id", "value": "Conversations.NewConversation" },
       "newMessage": { "using": "accessibility id", "value": "StartConversation.NewMessage" },
-      "ownIdentity": { "using": "accessibility id", "value": "Settings.SessionId" },
-      "settingsBack": { "using": "accessibility id", "value": "Settings.Back" },
-      "identityInput": { "using": "accessibility id", "value": "NewConversation.SessionId" },
+      "identityInput": { "using": "accessibility id", "value": "NewConversation.DeepId" },
       "aliasInput": { "using": "accessibility id", "value": "NewConversation.DisplayName" },
       "identitySubmit": { "using": "accessibility id", "value": "NewConversation.Start" },
-      "identityError": { "using": "accessibility id", "value": "NewConversation.Error" },
-      "identityBack": { "using": "accessibility id", "value": "NewConversation.Back" },
       "conversationRow": { "using": "accessibility id", "value": "DesktopWorkspace.ConversationRow" },
+      "contactPending": { "using": "accessibility id", "value": "Contact.State.Pending" },
+      "contactVerified": { "using": "accessibility id", "value": "Contact.State.Verified" },
       "messageComposer": { "using": "accessibility id", "value": "DesktopWorkspace.DirectDraft" },
       "messageSend": { "using": "accessibility id", "value": "DesktopWorkspace.DirectSend" },
       "messageBody": { "using": "accessibility id", "value": "DesktopWorkspace.DirectMessageBody" },
-      "deliveryStatus": { "using": "accessibility id", "value": "DesktopWorkspace.DirectDeliveryStatus" },
-      "manualRetry": { "using": "accessibility id", "value": "DesktopWorkspace.DirectRetry" },
-      "attachmentFilename": { "using": "accessibility id", "value": "DesktopWorkspace.DirectAttachmentFilename" },
-      "attachmentSave": { "using": "accessibility id", "value": "DesktopWorkspace.AttachmentSave" },
-      "routeNodeMarker": { "using": "accessibility id", "value": "PhysicalE2E.RouteNodeMarker" }
+      "deliveryPending": { "using": "accessibility id", "value": "DesktopWorkspace.DirectDelivery.Queued" },
+      "deliveryDelivered": { "using": "accessibility id", "value": "DesktopWorkspace.DirectDelivery.Delivered" },
+      "groups": { "using": "accessibility id", "value": "DesktopWorkspace.Groups" },
+      "groupCreate": { "using": "accessibility id", "value": "Groups.Create" },
+      "groupNameInput": { "using": "accessibility id", "value": "GroupCreate.Name" },
+      "groupMemberDeepIdInput": { "using": "accessibility id", "value": "GroupCreate.MemberDeepId" },
+      "groupAddMember": { "using": "accessibility id", "value": "GroupCreate.AddMember" },
+      "groupSubmit": { "using": "accessibility id", "value": "GroupCreate.Submit" },
+      "groupStatePending": { "using": "accessibility id", "value": "Group.State.Pending" },
+      "groupStateActive": { "using": "accessibility id", "value": "Group.State.Active" },
+      "groupRow": { "using": "accessibility id", "value": "Groups.GroupRow" },
+      "groupMessageComposer": { "using": "accessibility id", "value": "GroupChat.Draft" },
+      "groupMessageSend": { "using": "accessibility id", "value": "GroupChat.Send" },
+      "groupMessageBody": { "using": "accessibility id", "value": "GroupChat.MessageBody" },
+      "groupMembers": { "using": "accessibility id", "value": "Group.Members" },
+      "groupMemberRow": { "using": "accessibility id", "value": "Group.MemberRow" },
+      "groupRemove": { "using": "accessibility id", "value": "Group.Member.Remove" },
+      "groupRemoveConfirm": { "using": "accessibility id", "value": "Group.Member.RemoveConfirm" },
+      "groupMemberStateRemoved": { "using": "accessibility id", "value": "Group.Member.State.Removed" }
     }
   },
   "flows": {
-    "bootstrapIdentity": [
+    "offlineAccountCreate": [
       { "target": "windows", "type": "waitVisible", "purpose": "windowsWelcomeVisible", "selector": { "role": "welcomeDisplayName" }, "timeoutMs": 30000 },
+      { "target": "windows", "type": "assertExactText", "purpose": "offlineNoCallbackBeforeCreate", "selector": { "role": "networkCallbackCount" }, "contains": "0" },
       { "target": "windows", "type": "setValue", "purpose": "windowsDisplayName", "selector": { "role": "welcomeDisplayName" }, "value": "{{bootstrapWindowsName}}" },
       { "target": "windows", "type": "click", "purpose": "windowsCreateIdentity", "selector": { "role": "welcomeCreate" } },
-      { "target": "windows", "type": "waitVisible", "purpose": "windowsConversationsReady", "selector": { "role": "newConversation" }, "timeoutMs": 30000 },
+      { "target": "windows", "type": "waitVisible", "purpose": "windowsConversationsReady", "selector": { "role": "conversationsRoot" }, "timeoutMs": 30000 },
+      { "target": "windows", "type": "assertExactText", "purpose": "offlineNoCallbackAfterCreate", "selector": { "role": "networkCallbackCount" }, "contains": "0" },
       { "target": "windows", "type": "click", "purpose": "windowsSettingsOpen", "selector": { "role": "profileSettings" } },
       { "target": "windows", "type": "captureIdentity", "purpose": "captureWindowsIdentity", "selector": { "role": "ownIdentity" }, "saveAs": "actualIdentityWindows" },
-      { "target": "windows", "type": "click", "purpose": "windowsSettingsClose", "selector": { "role": "settingsBack" } },
+      { "target": "windows", "type": "click", "purpose": "recoveryPhraseReveal", "selector": { "role": "recoveryPhraseReveal" } },
+      { "target": "windows", "type": "captureRecoveryPhrase", "purpose": "captureWindowsRecoveryPhrase", "selector": { "role": "recoveryPhraseValue" }, "saveAs": "windowsRecoveryPhrase" },
+      { "target": "windows", "type": "click", "purpose": "windowsSettingsClose", "selector": { "role": "settingsBack" } }
+    ],
+    "offlineAccountRestore": [
+      { "target": "system", "type": "resetWindowsProfile", "purpose": "resetWindowsProfile" },
+      { "target": "windows", "type": "waitVisible", "purpose": "restoreWelcomeVisible", "selector": { "role": "welcomeRestore" }, "timeoutMs": 30000 },
+      { "target": "windows", "type": "assertExactText", "purpose": "offlineNoCallbackBeforeRestore", "selector": { "role": "networkCallbackCount" }, "contains": "0" },
+      { "target": "windows", "type": "click", "purpose": "restoreOpen", "selector": { "role": "welcomeRestore" } },
+      { "target": "windows", "type": "setValue", "purpose": "restorePhraseEntry", "selector": { "role": "welcomeRestorePhrase" }, "value": "{{windowsRecoveryPhrase}}" },
+      { "target": "windows", "type": "click", "purpose": "restoreSubmit", "selector": { "role": "welcomeRestoreSubmit" } },
+      { "target": "windows", "type": "waitVisible", "purpose": "restoreConversationsReady", "selector": { "role": "conversationsRoot" }, "timeoutMs": 30000 },
+      { "target": "windows", "type": "assertExactText", "purpose": "offlineNoCallbackAfterRestore", "selector": { "role": "networkCallbackCount" }, "contains": "0" },
+      { "target": "windows", "type": "click", "purpose": "restoredSettingsOpen", "selector": { "role": "profileSettings" } },
+      { "target": "windows", "type": "assertIdentityMatches", "purpose": "assertRestoredWindowsIdentity", "selector": { "role": "ownIdentity" }, "matches": "{{actualIdentityWindows}}" },
+      { "target": "windows", "type": "click", "purpose": "restoredSettingsClose", "selector": { "role": "settingsBack" } },
+      { "target": "system", "type": "restoreServicesOnline", "purpose": "offlineServicesRestore" }
+    ],
+    "reciprocalContact": [
       { "target": "android", "type": "waitVisible", "purpose": "androidConversationsReady", "selector": { "role": "pageConversations" }, "timeoutMs": 30000 },
       { "target": "android", "type": "click", "purpose": "androidSettingsOpen", "selector": { "role": "profileSettings" } },
       { "target": "android", "type": "captureIdentity", "purpose": "captureAndroidIdentity", "selector": { "role": "ownIdentity" }, "saveAs": "actualIdentityAndroid" },
-      { "target": "android", "type": "click", "purpose": "androidSettingsClose", "selector": { "role": "settingsBack" } }
-    ],
-    "invalidIdentity": [
-      { "target": "windows", "type": "click", "purpose": "invalidNewConversation", "selector": { "role": "newConversation" } },
-      { "target": "windows", "type": "click", "purpose": "invalidNewMessage", "selector": { "role": "newMessage" } },
-      { "target": "windows", "type": "setValue", "purpose": "invalidIdentityEntry", "selector": { "role": "identityInput" }, "value": "{{invalidIdentity}}" },
-      { "target": "windows", "type": "click", "purpose": "invalidIdentitySubmit", "selector": { "role": "identitySubmit" } },
-      { "target": "windows", "type": "assertText", "purpose": "invalidIdentityRejection", "selector": { "role": "identityError" }, "contains": "коррект" },
-      { "target": "windows", "type": "click", "purpose": "invalidIdentityBack", "selector": { "role": "identityBack" } },
-      { "target": "windows", "type": "assertNotTextStable", "purpose": "invalidIdentityContactAbsent", "selector": { "role": "conversationRow" }, "contains": "{{invalidIdentity}}", "stabilityMs": 2000 }
-    ],
-    "mutualIdentity": [
+      { "target": "android", "type": "click", "purpose": "androidSettingsClose", "selector": { "role": "settingsBack" } },
       { "target": "windows", "type": "click", "purpose": "windowsNewConversation", "selector": { "role": "newConversation" } },
       { "target": "windows", "type": "click", "purpose": "windowsNewMessage", "selector": { "role": "newMessage" } },
-      { "target": "windows", "type": "setValue", "purpose": "addIdentityOnwindows", "selector": { "role": "identityInput" }, "value": "{{actualIdentityAndroid}}" },
-      { "target": "windows", "type": "setValue", "purpose": "setMarkerOnwindows", "selector": { "role": "aliasInput" }, "value": "{{contactMarkerAndroid}}" },
-      { "target": "windows", "type": "click", "purpose": "submitContactOnwindows", "selector": { "role": "identitySubmit" } },
-      { "target": "windows", "type": "waitText", "purpose": "contactPresentOnwindows", "selector": { "role": "conversationRow" }, "contains": "{{contactMarkerAndroid}}", "timeoutMs": 30000 },
+      { "target": "windows", "type": "setValue", "purpose": "windowsImportAndroidDeepId", "selector": { "role": "identityInput" }, "value": "{{actualIdentityAndroid}}" },
+      { "target": "windows", "type": "setValue", "purpose": "windowsContactAlias", "selector": { "role": "aliasInput" }, "value": "{{contactMarkerAndroid}}" },
+      { "target": "windows", "type": "click", "purpose": "windowsContactSubmit", "selector": { "role": "identitySubmit" } },
+      { "target": "windows", "type": "assertExactText", "purpose": "windowsContactPending", "selector": { "role": "contactPending" }, "contains": "Pending", "timeoutMs": 30000 },
       { "target": "android", "type": "click", "purpose": "androidNewConversation", "selector": { "role": "newConversation" } },
       { "target": "android", "type": "click", "purpose": "androidNewMessage", "selector": { "role": "newMessage" } },
-      { "target": "android", "type": "setValue", "purpose": "addIdentityOnandroid", "selector": { "role": "identityInput" }, "value": "{{actualIdentityWindows}}" },
-      { "target": "android", "type": "setValue", "purpose": "setMarkerOnandroid", "selector": { "role": "aliasInput" }, "value": "{{contactMarkerWindows}}" },
-      { "target": "android", "type": "click", "purpose": "submitContactOnandroid", "selector": { "role": "identitySubmit" } },
-      { "target": "android", "type": "waitVisible", "purpose": "androidChatReady", "selector": { "role": "messageComposer" }, "timeoutMs": 30000 },
-      { "target": "android", "type": "click", "purpose": "androidChatBack", "selector": { "role": "chatBack" } },
-      { "target": "android", "type": "waitText", "purpose": "contactPresentOnandroid", "selector": { "role": "conversationRow" }, "contains": "{{contactMarkerWindows}}", "timeoutMs": 30000 },
-      { "target": "android", "type": "clickText", "purpose": "androidConversationOpen", "selector": { "role": "conversationRow" }, "contains": "{{contactMarkerWindows}}" }
+      { "target": "android", "type": "setValue", "purpose": "androidImportWindowsDeepId", "selector": { "role": "identityInput" }, "value": "{{actualIdentityWindows}}" },
+      { "target": "android", "type": "setValue", "purpose": "androidContactAlias", "selector": { "role": "aliasInput" }, "value": "{{contactMarkerWindows}}" },
+      { "target": "android", "type": "click", "purpose": "androidContactSubmit", "selector": { "role": "identitySubmit" } },
+      { "target": "android", "type": "assertExactText", "purpose": "androidContactPending", "selector": { "role": "contactPending" }, "contains": "Pending", "timeoutMs": 30000 },
+      { "target": "windows", "type": "assertExactText", "purpose": "windowsContactVerified", "selector": { "role": "contactVerified" }, "contains": "Verified", "timeoutMs": 60000 },
+      { "target": "android", "type": "assertExactText", "purpose": "androidContactVerified", "selector": { "role": "contactVerified" }, "contains": "Verified", "timeoutMs": 60000 }
     ],
     "windowsToAndroidText": [
       { "target": "windows", "type": "setValue", "purpose": "messageEntry", "selector": { "role": "messageComposer" }, "value": "{{windowsToAndroidMessage}}" },
@@ -149,71 +177,58 @@
       { "target": "android", "type": "click", "purpose": "messageSend", "selector": { "role": "messageSend" } },
       { "target": "windows", "type": "waitText", "purpose": "messageReceive", "selector": { "role": "messageBody" }, "contains": "{{androidToWindowsMessage}}", "timeoutMs": 45000 }
     ],
-    "androidToWindowsAttachment": [
-      { "target": "android", "type": "click", "purpose": "attachmentMenuOpen", "selector": { "role": "attachmentMenu" } },
-      { "target": "android", "type": "click", "purpose": "attachmentPickerOpen", "selector": { "role": "attachmentFile" } },
-      { "target": "android", "type": "clickText", "purpose": "attachmentDownloadsOpen", "selector": { "role": "pickerDownloads" }, "contains": "Загрузки" },
-      { "target": "android", "type": "clickText", "purpose": "attachmentPick", "selector": { "role": "pickerFile" }, "contains": "{{attachmentName}}" },
-      { "target": "android", "type": "waitText", "purpose": "attachmentStaged", "selector": { "role": "stagedAttachmentFilename" }, "contains": "{{attachmentName}}", "timeoutMs": 30000 },
-      { "target": "android", "type": "click", "purpose": "attachmentSend", "selector": { "role": "messageSend" } },
-      { "target": "windows", "type": "waitText", "purpose": "attachmentListed", "selector": { "role": "attachmentFilename" }, "contains": "{{attachmentName}}", "timeoutMs": 45000 },
-      { "target": "windows", "type": "clickText", "purpose": "attachmentDownload", "selector": { "role": "attachmentFilename" }, "contains": "{{attachmentName}}" },
-      { "target": "windows", "type": "click", "purpose": "attachmentSave", "selector": { "role": "attachmentSave" } },
-      { "target": "windows", "type": "assertDownloadedAttachment", "purpose": "attachmentInitialHash", "phase": "initial" }
+    "smallClosedGroup": [
+      { "target": "windows", "type": "click", "purpose": "groupsOpen", "selector": { "role": "groups" } },
+      { "target": "windows", "type": "click", "purpose": "groupCreateOpen", "selector": { "role": "groupCreate" } },
+      { "target": "windows", "type": "setValue", "purpose": "groupNameEntry", "selector": { "role": "groupNameInput" }, "value": "{{groupName}}" },
+      { "target": "windows", "type": "setValue", "purpose": "groupInviteDeepIdEntry", "selector": { "role": "groupMemberDeepIdInput" }, "value": "{{actualIdentityAndroid}}" },
+      { "target": "windows", "type": "click", "purpose": "groupAddMember", "selector": { "role": "groupAddMember" } },
+      { "target": "windows", "type": "click", "purpose": "groupCreateSubmit", "selector": { "role": "groupSubmit" } },
+      { "target": "windows", "type": "assertExactText", "purpose": "groupInvitePending", "selector": { "role": "groupStatePending" }, "contains": "Pending", "timeoutMs": 30000 },
+      { "target": "android", "type": "click", "purpose": "androidGroupsOpen", "selector": { "role": "groups" } },
+      { "target": "android", "type": "clickText", "purpose": "groupInviteOpen", "selector": { "role": "groupInviteRow" }, "contains": "{{groupName}}", "timeoutMs": 45000 },
+      { "target": "android", "type": "click", "purpose": "groupInviteAccept", "selector": { "role": "groupInviteAccept" } },
+      { "target": "android", "type": "assertExactText", "purpose": "groupActiveOnAndroid", "selector": { "role": "groupStateActive" }, "contains": "Active", "timeoutMs": 45000 },
+      { "target": "windows", "type": "assertExactText", "purpose": "groupActiveOnWindows", "selector": { "role": "groupStateActive" }, "contains": "Active", "timeoutMs": 45000 },
+      { "target": "windows", "type": "setValue", "purpose": "groupMessageEntry", "selector": { "role": "groupMessageComposer" }, "value": "{{groupMessage}}" },
+      { "target": "windows", "type": "click", "purpose": "groupMessageSend", "selector": { "role": "groupMessageSend" } },
+      { "target": "android", "type": "waitText", "purpose": "groupMessageReceive", "selector": { "role": "groupMessageBody" }, "contains": "{{groupMessage}}", "timeoutMs": 45000 },
+      { "target": "windows", "type": "click", "purpose": "groupMembersOpen", "selector": { "role": "groupMembers" } },
+      { "target": "windows", "type": "clickText", "purpose": "groupMemberSelect", "selector": { "role": "groupMemberRow" }, "contains": "{{contactMarkerAndroid}}" },
+      { "target": "windows", "type": "click", "purpose": "groupRemoveMember", "selector": { "role": "groupRemove" } },
+      { "target": "windows", "type": "click", "purpose": "groupRemoveConfirm", "selector": { "role": "groupRemoveConfirm" } },
+      { "target": "windows", "type": "assertExactText", "purpose": "groupMemberRemovedOnWindows", "selector": { "role": "groupMemberStateRemoved" }, "contains": "Removed", "timeoutMs": 45000 },
+      { "target": "android", "type": "assertExactText", "purpose": "groupRemovedOnAndroid", "selector": { "role": "groupStateRemoved" }, "contains": "Removed", "timeoutMs": 45000 },
+      { "target": "windows", "type": "setValue", "purpose": "postRemovalMessageEntry", "selector": { "role": "groupMessageComposer" }, "value": "{{removedExclusionMessage}}" },
+      { "target": "windows", "type": "click", "purpose": "postRemovalMessageSend", "selector": { "role": "groupMessageSend" } },
+      { "target": "android", "type": "assertNotTextStable", "purpose": "removedDeviceExcluded", "selector": { "role": "groupMessageBody" }, "contains": "{{removedExclusionMessage}}", "stabilityMs": 5000 }
     ],
     "coldRestartVerify": [
-      { "target": "windows", "type": "clickText", "purpose": "reopenConversation", "selector": { "role": "conversationRow" }, "contains": "{{contactMarkerAndroid}}" },
-      { "target": "windows", "type": "waitText", "purpose": "attachmentListedAfterRestart", "selector": { "role": "attachmentFilename" }, "contains": "{{attachmentName}}", "timeoutMs": 45000 },
-      { "target": "windows", "type": "clickText", "purpose": "attachmentRedownload", "selector": { "role": "attachmentFilename" }, "contains": "{{attachmentName}}" },
-      { "target": "windows", "type": "click", "purpose": "attachmentResave", "selector": { "role": "attachmentSave" } },
-      { "target": "windows", "type": "assertDownloadedAttachment", "purpose": "attachmentRestartHash", "phase": "afterRestart" }
+      { "target": "system", "type": "restartClients", "purpose": "coldRestartClients" },
+      { "target": "windows", "type": "click", "purpose": "coldWindowsSettingsOpen", "selector": { "role": "profileSettings" } },
+      { "target": "windows", "type": "assertIdentityMatches", "purpose": "coldWindowsIdentity", "selector": { "role": "ownIdentity" }, "matches": "{{actualIdentityWindows}}" },
+      { "target": "windows", "type": "click", "purpose": "coldWindowsSettingsClose", "selector": { "role": "settingsBack" } },
+      { "target": "android", "type": "click", "purpose": "coldAndroidSettingsOpen", "selector": { "role": "profileSettings" } },
+      { "target": "android", "type": "assertIdentityMatches", "purpose": "coldAndroidIdentity", "selector": { "role": "ownIdentity" }, "matches": "{{actualIdentityAndroid}}" },
+      { "target": "android", "type": "click", "purpose": "coldAndroidSettingsClose", "selector": { "role": "settingsBack" } },
+      { "target": "windows", "type": "assertExactText", "purpose": "coldWindowsContactVerified", "selector": { "role": "contactVerified" }, "contains": "Verified" },
+      { "target": "android", "type": "assertExactText", "purpose": "coldAndroidContactVerified", "selector": { "role": "contactVerified" }, "contains": "Verified" },
+      { "target": "windows", "type": "assertExactText", "purpose": "coldRemovedMemberState", "selector": { "role": "groupMemberStateRemoved" }, "contains": "Removed" },
+      { "target": "windows", "type": "waitText", "purpose": "coldDirectHistoryWindows", "selector": { "role": "messageBody" }, "contains": "{{androidToWindowsMessage}}", "timeoutMs": 30000 },
+      { "target": "android", "type": "waitText", "purpose": "coldDirectHistoryAndroid", "selector": { "role": "messageBody" }, "contains": "{{windowsToAndroidMessage}}", "timeoutMs": 30000 }
     ],
-    "manualResendAfterRestart": [
-      { "target": "windows", "type": "captureRouteMarker", "purpose": "manualRouteCapture", "selector": { "role": "routeNodeMarker" }, "saveAs": "observedRouteNode", "expected": "{{expectedRouteNode}}" },
-      { "target": "system", "type": "stopObservedRoute", "purpose": "manualRouteStop" },
-      { "target": "windows", "type": "setValue", "purpose": "manualMessageEntry", "selector": { "role": "messageComposer" }, "value": "{{manualResendMessage}}" },
-      { "target": "windows", "type": "click", "purpose": "manualMessageSend", "selector": { "role": "messageSend" } },
-      { "target": "windows", "type": "waitText", "purpose": "manualFailureObserved", "selector": { "role": "deliveryStatus" }, "contains": "!", "timeoutMs": 30000 },
-      { "target": "system", "type": "restartClients", "purpose": "manualClientsRestart" },
-      { "target": "system", "type": "startObservedRoute", "purpose": "manualRouteStart" },
-      { "target": "windows", "type": "clickText", "purpose": "manualWindowsConversationOpen", "selector": { "role": "conversationRow" }, "contains": "{{contactMarkerAndroid}}" },
-      { "target": "android", "type": "waitVisible", "purpose": "manualAndroidConversationsReady", "selector": { "role": "pageConversations" }, "timeoutMs": 30000 },
-      { "target": "android", "type": "clickText", "purpose": "manualAndroidConversationOpen", "selector": { "role": "conversationRow" }, "contains": "{{contactMarkerWindows}}" },
-      { "target": "windows", "type": "click", "purpose": "manualRetryClick", "selector": { "role": "manualRetry" } },
-      { "target": "android", "type": "waitText", "purpose": "manualDeliveryObserved", "selector": { "role": "messageBody" }, "contains": "{{manualResendMessage}}", "timeoutMs": 45000 }
-    ],
-    "automaticRetryAfterRestart": [
-      { "target": "windows", "type": "captureRouteMarker", "purpose": "automaticRouteCapture", "selector": { "role": "routeNodeMarker" }, "saveAs": "observedRouteNode", "expected": "{{expectedRouteNode}}" },
-      { "target": "system", "type": "stopObservedRoute", "purpose": "automaticRouteStop" },
-      { "target": "windows", "type": "setValue", "purpose": "automaticMessageEntry", "selector": { "role": "messageComposer" }, "value": "{{automaticRetryMessage}}" },
-      { "target": "windows", "type": "click", "purpose": "automaticMessageSend", "selector": { "role": "messageSend" } },
-      { "target": "windows", "type": "waitText", "purpose": "automaticFailureObserved", "selector": { "role": "deliveryStatus" }, "contains": "!", "timeoutMs": 30000 },
-      { "target": "system", "type": "restartClients", "purpose": "automaticClientsRestart" },
-      { "target": "system", "type": "startObservedRoute", "purpose": "automaticRouteStart" },
-      { "target": "windows", "type": "clickText", "purpose": "automaticWindowsConversationOpen", "selector": { "role": "conversationRow" }, "contains": "{{contactMarkerAndroid}}" },
-      { "target": "android", "type": "waitVisible", "purpose": "automaticAndroidConversationsReady", "selector": { "role": "pageConversations" }, "timeoutMs": 30000 },
-      { "target": "android", "type": "clickText", "purpose": "automaticAndroidConversationOpen", "selector": { "role": "conversationRow" }, "contains": "{{contactMarkerWindows}}" },
-      { "target": "android", "type": "waitText", "purpose": "automaticDeliveryObserved", "selector": { "role": "messageBody" }, "contains": "{{automaticRetryMessage}}", "timeoutMs": 60000 }
-    ]
-  },
-  "chaos": {
-    "enabled": true,
-    "expectedRouteNode": "router-1",
-    "healthTimeoutMs": 60000,
-    "healthPollMs": 500,
-    "routeMarker": {
-      "target": "windows",
-      "type": "captureRouteMarker",
-      "purpose": "routeChaosCapture",
-      "selector": { "role": "routeNodeMarker" },
-      "saveAs": "observedRouteNode",
-      "expected": "{{expectedRouteNode}}"
-    },
-    "routeBindings": [
-      { "routeNode": "router-1", "composeService": "router" }
-    ],
-    "actions": [
-      { "type": "restartComposeService", "routeRef": "{{observedRouteNode}}" }
+    "longOfflineRetry": [
+      { "target": "system", "type": "takeServicesOffline", "purpose": "longOfflineServicesStop" },
+      { "target": "windows", "type": "setValue", "purpose": "longOfflineMessageEntry", "selector": { "role": "messageComposer" }, "value": "{{longOfflineMessage}}" },
+      { "target": "windows", "type": "click", "purpose": "longOfflineMessageSend", "selector": { "role": "messageSend" } },
+      { "target": "windows", "type": "assertExactText", "purpose": "longOfflineQueued", "selector": { "role": "deliveryPending" }, "contains": "Queued", "timeoutMs": 30000 },
+      { "target": "system", "type": "restartClients", "purpose": "longOfflineRestartClients" },
+      { "target": "system", "type": "waitLongOffline", "purpose": "longOfflineWindow" },
+      { "target": "system", "type": "restoreServicesOnline", "purpose": "longOfflineServicesRestore" },
+      { "target": "android", "type": "clickText", "purpose": "longOfflineAndroidConversationOpen", "selector": { "role": "conversationRow" }, "contains": "{{contactMarkerWindows}}", "timeoutMs": 30000 },
+      { "target": "android", "type": "waitText", "purpose": "longOfflineDeliveryObserved", "selector": { "role": "messageBody" }, "contains": "{{longOfflineMessage}}", "timeoutMs": 60000 },
+      { "target": "windows", "type": "clickText", "purpose": "longOfflineWindowsConversationOpen", "selector": { "role": "conversationRow" }, "contains": "{{contactMarkerAndroid}}", "timeoutMs": 30000 },
+      { "target": "windows", "type": "assertExactText", "purpose": "longOfflineDelivered", "selector": { "role": "deliveryDelivered" }, "contains": "Delivered", "timeoutMs": 60000 }
     ]
   }
 }

@@ -1,18 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile as execFileCallback, spawn as spawnProcess } from 'node:child_process';
-import {
-  access,
-  lstat,
-  mkdir,
-  readFile,
-  realpath,
-  rm,
-  stat,
-  unlink,
-  writeFile
-} from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { access, lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
@@ -20,78 +10,127 @@ const execFile = promisify(execFileCallback);
 export const ANDROID_SERIAL = '192.168.1.45:43337';
 export const ANDROID_PACKAGE = 'network.xpoint.deep.e2e';
 export const ANDROID_LAUNCH_ACTIVITY = 'network.xpoint.deep.DeepLauncher';
+export const CONFIG_VERSION = 4;
+export const EVIDENCE_SCHEMA_VERSION = 4;
+export const DEEP_ID_PATTERN = '^deep1[023456789acdefghjklmnpqrstuvwxyz]{85}$';
 export const REQUIRED_FLOWS = Object.freeze([
-  'bootstrapIdentity',
-  'invalidIdentity',
-  'mutualIdentity',
+  'offlineAccountCreate',
+  'offlineAccountRestore',
+  'reciprocalContact',
   'windowsToAndroidText',
   'androidToWindowsText',
-  'androidToWindowsAttachment',
+  'smallClosedGroup',
   'coldRestartVerify',
-  'manualResendAfterRestart',
-  'automaticRetryAfterRestart'
+  'longOfflineRetry'
 ]);
 
-const SECRET_KEY = /(?:password|secret|token|api[_-]?key|authorization)/i;
+const SECRET_KEY = /(?:password|secret|token|api[_-]?key|authorization|recoveryMaterial)/i;
+const LEGACY_SESSION_SURFACE = /(?:SessionId|Settings\.Session|NewConversation\.Session|\^05\[)/i;
 const SEMANTIC_LOCATORS = new Set(['accessibility id', 'id']);
 const UI_ACTIONS = new Set([
-  'waitVisible',
-  'setValue',
-  'click',
-  'clickText',
-  'assertText',
-  'waitText',
-  'assertNotTextStable',
-  'captureIdentity',
-  'captureRouteMarker',
-  'assertDownloadedAttachment'
+  'waitVisible', 'setValue', 'click', 'clickText', 'waitText', 'assertExactText',
+  'assertNotTextStable', 'captureIdentity', 'captureRecoveryPhrase', 'assertIdentityMatches'
 ]);
 const SYSTEM_ACTIONS = new Set([
-  'restartClients',
-  'stopObservedRoute',
-  'startObservedRoute'
+  'resetWindowsProfile', 'restoreServicesOnline', 'takeServicesOffline',
+  'waitLongOffline', 'restartClients'
 ]);
 const PLATFORM_SELECTOR_ROLES = Object.freeze({
   android: Object.freeze([
-    'pageConversations', 'conversationsRoot', 'profileSettings', 'newConversation',
-    'newMessage', 'ownIdentity', 'settingsBack', 'identityInput', 'aliasInput',
-    'identitySubmit', 'identityError', 'identityBack', 'conversationRow', 'chatBack',
-    'messageComposer', 'messageSend', 'messageBody', 'deliveryStatus', 'manualRetry',
-    'attachmentMenu', 'attachmentFile', 'pickerDownloads', 'pickerFile',
-    'stagedAttachmentFilename'
+    'pageConversations', 'profileSettings', 'ownIdentity', 'settingsBack',
+    'newConversation', 'newMessage', 'identityInput', 'aliasInput', 'identitySubmit',
+    'conversationRow', 'contactPending', 'contactVerified', 'chatBack',
+    'messageComposer', 'messageSend', 'messageBody', 'deliveryPending', 'deliveryDelivered',
+    'groups', 'groupInviteRow', 'groupInviteAccept', 'groupStateActive',
+    'groupStateRemoved', 'groupMessageComposer', 'groupMessageSend', 'groupMessageBody'
   ]),
   windows: Object.freeze([
-    'welcomeDisplayName', 'welcomeCreate', 'conversationsRoot', 'profileSettings',
-    'newConversation', 'newMessage', 'ownIdentity', 'settingsBack', 'identityInput',
-    'aliasInput', 'identitySubmit', 'identityError', 'identityBack', 'conversationRow',
-    'messageComposer', 'messageSend', 'messageBody', 'deliveryStatus', 'manualRetry',
-    'attachmentFilename', 'attachmentSave', 'routeNodeMarker'
+    'welcomeDisplayName', 'welcomeCreate', 'welcomeRestore', 'welcomeRestorePhrase',
+    'welcomeRestoreSubmit', 'conversationsRoot', 'networkCallbackCount',
+    'profileSettings', 'ownIdentity', 'recoveryPhraseReveal', 'recoveryPhraseValue',
+    'settingsBack', 'newConversation', 'newMessage', 'identityInput', 'aliasInput',
+    'identitySubmit', 'conversationRow', 'contactPending', 'contactVerified',
+    'messageComposer', 'messageSend', 'messageBody', 'deliveryPending',
+    'deliveryDelivered', 'groups', 'groupCreate', 'groupNameInput',
+    'groupMemberDeepIdInput', 'groupAddMember', 'groupSubmit', 'groupStatePending',
+    'groupStateActive', 'groupRow', 'groupMessageComposer', 'groupMessageSend',
+    'groupMessageBody', 'groupMembers', 'groupMemberRow', 'groupRemove',
+    'groupRemoveConfirm', 'groupMemberStateRemoved'
   ])
 });
 const WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
+const RECOVERY_PHRASE_PATTERN = /^[a-z]+(?: [a-z]+){23}$/;
+const EVIDENCE_RECOVERY_PHRASE = /(?:^|[^a-z])(?:[a-z]+ ){23}[a-z]+(?:$|[^a-z])/;
+const EVIDENCE_DIGEST = /^[0-9a-f]{64}$/;
+const EXAMPLE_BUILD_SHA256S = new Set(['1', '2', '3', '4', '5'].map(value => value.repeat(64)));
+const REQUIRED_EVIDENCE_PURPOSES = Object.freeze({
+  offlineAccountCreate: Object.freeze([
+    'offlineNoCallbackBeforeCreate', 'windowsCreateIdentity', 'offlineNoCallbackAfterCreate',
+    'captureWindowsIdentity', 'captureWindowsRecoveryPhrase'
+  ]),
+  offlineAccountRestore: Object.freeze([
+    'resetWindowsProfile', 'offlineNoCallbackBeforeRestore', 'restorePhraseEntry',
+    'restoreSubmit', 'offlineNoCallbackAfterRestore', 'assertRestoredWindowsIdentity',
+    'offlineServicesRestore'
+  ]),
+  reciprocalContact: Object.freeze([
+    'captureAndroidIdentity', 'windowsImportAndroidDeepId', 'windowsContactPending',
+    'androidImportWindowsDeepId', 'androidContactPending', 'windowsContactVerified',
+    'androidContactVerified'
+  ]),
+  windowsToAndroidText: Object.freeze(['messageEntry', 'messageSend', 'messageReceive']),
+  androidToWindowsText: Object.freeze(['messageEntry', 'messageSend', 'messageReceive']),
+  smallClosedGroup: Object.freeze([
+    'groupNameEntry', 'groupInviteDeepIdEntry', 'groupInvitePending', 'groupInviteAccept',
+    'groupActiveOnAndroid', 'groupActiveOnWindows', 'groupMessageEntry',
+    'groupMessageReceive', 'groupRemoveMember', 'groupMemberRemovedOnWindows',
+    'groupRemovedOnAndroid', 'postRemovalMessageEntry', 'removedDeviceExcluded'
+  ]),
+  coldRestartVerify: Object.freeze([
+    'coldRestartClients', 'coldWindowsIdentity', 'coldAndroidIdentity',
+    'coldWindowsContactVerified', 'coldAndroidContactVerified', 'coldRemovedMemberState',
+    'coldDirectHistoryWindows', 'coldDirectHistoryAndroid'
+  ]),
+  longOfflineRetry: Object.freeze([
+    'longOfflineServicesStop', 'longOfflineMessageEntry', 'longOfflineMessageSend',
+    'longOfflineQueued', 'longOfflineRestartClients', 'longOfflineWindow',
+    'longOfflineServicesRestore', 'longOfflineDeliveryObserved', 'longOfflineDelivered'
+  ])
+});
 
-// Node's Windows Stats omits FileAttributes, so the production adapter queries
-// the attribute through .NET. Tests and non-Windows hosts can inject the same
-// `(path, lstatResult) => boolean` contract through `fs.isReparsePoint`.
-export async function isWindowsReparsePoint(path, _info, options = {}) {
-  assert.ok(process.platform === 'win32' || options.command, 'Windows ReparsePoint inspection requires Windows or an injected adapter');
-  assert.equal(isAbsolute(path), true, 'Windows ReparsePoint inspection requires an absolute path');
-  const absolutePath = resolve(path);
-  const escapedPath = absolutePath.replaceAll("'", "''");
-  const script = `$ErrorActionPreference='Stop';[int][IO.File]::GetAttributes('${escapedPath}')`;
-  const command = options.command ?? defaultCommand;
-  const timeoutMs = options.timeoutMs ?? 10_000;
-  assert.ok(Number.isInteger(timeoutMs) && timeoutMs > 0, 'Windows ReparsePoint inspection timeout must be positive');
-  const result = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: timeoutMs });
-  assert.equal(String(result.stderr ?? '').trim(), '', 'Windows ReparsePoint inspection wrote to stderr');
-  const output = String(result.stdout).trim();
-  assert.match(output, /^\d+$/, 'Windows ReparsePoint inspection returned invalid attributes');
-  const attributes = Number(output);
-  assert.ok(Number.isSafeInteger(attributes), 'Windows ReparsePoint inspection returned unsafe attributes');
-  return (attributes & WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT) !== 0;
+const fsDefault = {
+  access, isReparsePoint: isWindowsReparsePoint, lstat, mkdir, readFile, realpath, rm, writeFile
+};
+
+export function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
-const fsDefault = { access, isReparsePoint: isWindowsReparsePoint, lstat, mkdir, readFile, realpath, rm, stat, unlink, writeFile };
+function required(value, message) {
+  assert.ok(value, message);
+  return value;
+}
+
+function exactKeys(value, expected, context) {
+  assert.deepEqual(Object.keys(value).sort(), [...expected].sort(), `${context} fields must match the v4 schema exactly`);
+}
+
+function pathFingerprint(path) {
+  return { basename: basename(path), pathSha256: sha256(resolve(path).toLowerCase()) };
+}
+
+function safeUnder(root, candidate) {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel.length > 0 && !rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel);
+}
+
+function now(dependencies = {}) {
+  return (dependencies.now ?? Date.now)();
+}
+
+function sleepDefault(milliseconds) {
+  return new Promise(resolveWait => setTimeout(resolveWait, milliseconds));
+}
 
 export function createMarkers(runId = randomUUID()) {
   assert.match(runId, /^[A-Za-z0-9][A-Za-z0-9-]{3,79}$/, 'runId must be a safe 4-80 character identifier');
@@ -99,53 +138,15 @@ export function createMarkers(runId = randomUUID()) {
   return {
     runId,
     bootstrapWindowsName: `deep-e2e-windows-${compact}`,
-    invalidIdentity: `deep-e2e-invalid-${compact}`,
     contactMarkerWindows: `deep-e2e-contact-win-${compact}`,
     contactMarkerAndroid: `deep-e2e-contact-android-${compact}`,
     windowsToAndroidMessage: `deep-e2e W>A ${compact}`,
     androidToWindowsMessage: `deep-e2e A>W ${compact}`,
-    manualResendMessage: `deep-e2e manual-resend ${compact}`,
-    automaticRetryMessage: `deep-e2e automatic-retry ${compact}`,
-    attachmentName: `deep-e2e-attachment-${compact}.bin`
+    groupName: `deep-e2e-group-${compact}`,
+    groupMessage: `deep-e2e group ${compact}`,
+    removedExclusionMessage: `deep-e2e removed-exclusion ${compact}`,
+    longOfflineMessage: `deep-e2e long-offline ${compact}`
   };
-}
-
-export function sha256(bytes) {
-  return createHash('sha256').update(bytes).digest('hex');
-}
-
-function pathFingerprint(path) {
-  return { basename: basename(path), pathSha256: sha256(resolve(path).toLowerCase()) };
-}
-
-function normalizeEndpointUrl(value) {
-  const url = new URL(value);
-  assert.ok(['http:', 'https:'].includes(url.protocol), 'endpoint pin must use HTTP(S)');
-  assert.equal(url.username, '', 'endpoint pin cannot contain credentials');
-  assert.equal(url.password, '', 'endpoint pin cannot contain credentials');
-  assert.equal(url.search, '', 'endpoint pin cannot contain a query string');
-  assert.equal(url.hash, '', 'endpoint pin cannot contain a fragment');
-  if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, '');
-  return `${url.origin}${url.pathname}`;
-}
-
-export function assertArm64WindowsExecutable(bytes) {
-  const pe = Buffer.from(bytes);
-  assert.ok(pe.length >= 0x40 && pe.subarray(0, 2).toString('ascii') === 'MZ', 'Windows executable is not a PE file');
-  const headerOffset = pe.readUInt32LE(0x3c);
-  assert.ok(pe.length >= headerOffset + 6 && pe.subarray(headerOffset, headerOffset + 4).toString('ascii') === 'PE\0\0', 'Windows executable has no PE header');
-  assert.equal(pe.readUInt16LE(headerOffset + 4), 0xaa64, 'Windows executable must target ARM64 (PE machine 0xAA64)');
-}
-
-export function parseComposePs(stdout) {
-  const trimmed = String(stdout).trim();
-  if (!trimmed) return [];
-  try {
-    const parsed = JSON.parse(trimmed);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch {
-    return trimmed.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
-  }
 }
 
 export function interpolate(value, variables) {
@@ -154,11 +155,6 @@ export function interpolate(value, variables) {
     assert.ok(Object.hasOwn(variables, key), `Unknown physical E2E template variable '{{${key}}}'`);
     return String(variables[key]);
   });
-}
-
-function required(value, message) {
-  assert.ok(value, message);
-  return value;
 }
 
 function rejectSecrets(value, path = 'config') {
@@ -173,13 +169,56 @@ function rejectSecrets(value, path = 'config') {
   }
 }
 
-function hasAction(actions, predicate) {
-  return actions.some(predicate);
+function normalizeEndpointUrl(value) {
+  const url = new URL(value);
+  assert.ok(['http:', 'https:'].includes(url.protocol), 'endpoint pin must use HTTP(S)');
+  assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname), 'endpoint pin must target the local physical harness');
+  assert.equal(url.username, '', 'endpoint pin cannot contain credentials');
+  assert.equal(url.password, '', 'endpoint pin cannot contain credentials');
+  assert.equal(url.search, '', 'endpoint pin cannot contain a query string');
+  assert.equal(url.hash, '', 'endpoint pin cannot contain a fragment');
+  if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, '');
+  return `${url.origin}${url.pathname}`;
+}
+
+export function parseComposePs(stdout) {
+  const trimmed = String(stdout).trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return trimmed.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+  }
+}
+
+export function assertArm64WindowsExecutable(bytes) {
+  const pe = Buffer.from(bytes);
+  assert.ok(pe.length >= 0x40 && pe.subarray(0, 2).toString('ascii') === 'MZ', 'Windows executable is not a PE file');
+  const headerOffset = pe.readUInt32LE(0x3c);
+  assert.ok(pe.length >= headerOffset + 6 && pe.subarray(headerOffset, headerOffset + 4).toString('ascii') === 'PE\0\0', 'Windows executable has no PE header');
+  assert.equal(pe.readUInt16LE(headerOffset + 4), 0xaa64, 'Windows executable must target ARM64 (PE machine 0xAA64)');
+}
+
+export async function isWindowsReparsePoint(path, _info, options = {}) {
+  assert.ok(process.platform === 'win32' || options.command, 'Windows ReparsePoint inspection requires Windows or an injected adapter');
+  assert.equal(isAbsolute(path), true, 'Windows ReparsePoint inspection requires an absolute path');
+  const absolutePath = resolve(path);
+  const escapedPath = absolutePath.replaceAll("'", "''");
+  const script = `$ErrorActionPreference='Stop';[int][IO.File]::GetAttributes('${escapedPath}')`;
+  const command = options.command ?? defaultCommand;
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  assert.ok(Number.isInteger(timeoutMs) && timeoutMs > 0, 'Windows ReparsePoint inspection timeout must be positive');
+  const result = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: timeoutMs });
+  assert.equal(String(result.stderr ?? '').trim(), '', 'Windows ReparsePoint inspection wrote to stderr');
+  const output = String(result.stdout).trim();
+  assert.match(output, /^\d+$/, 'Windows ReparsePoint inspection returned invalid attributes');
+  return (Number(output) & WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT) !== 0;
 }
 
 function validateSelector(action, name, selectors) {
   required(action.selector && typeof action.selector === 'object', `${name} needs a semantic selector`);
-  assert.deepEqual(Object.keys(action.selector), ['role'], `${name} selector must reference one platform role`);
+  exactKeys(action.selector, ['role'], `${name}.selector`);
   const role = required(action.selector.role, `${name} selector role is required`);
   required(selectors[action.target]?.[role], `${name} references missing ${action.target} selector role '${role}'`);
 }
@@ -187,35 +226,49 @@ function validateSelector(action, name, selectors) {
 function validateAction(action, name, selectors) {
   required(action && typeof action === 'object', `${name} must be an action object`);
   required(UI_ACTIONS.has(action.type) || SYSTEM_ACTIONS.has(action.type), `${name} has unsupported action '${action.type}'`);
+  required(typeof action.purpose === 'string' && /^[A-Za-z][A-Za-z0-9]{2,79}$/.test(action.purpose), `${name} needs a bounded semantic purpose`);
   if (SYSTEM_ACTIONS.has(action.type)) {
+    exactKeys(action, ['target', 'type', 'purpose'], name);
     assert.equal(action.target, 'system', `${name} system action must target system`);
-    assert.equal(Object.hasOwn(action, 'selector'), false, `${name} system action cannot have a selector`);
     return;
-  }
-  if (Object.hasOwn(action, 'timeoutMs')) {
-    assert.ok(Number.isInteger(action.timeoutMs) && action.timeoutMs >= 1_000 && action.timeoutMs <= 120_000, `${name} timeoutMs must be 1000-120000`);
   }
   assert.ok(['android', 'windows'].includes(action.target), `${name} needs target android or windows`);
-  if (action.type === 'assertDownloadedAttachment') {
-    assert.equal(action.target, 'windows', `${name} decrypted attachment assertion must target Windows`);
-    assert.ok(['initial', 'afterRestart'].includes(action.phase), `${name} needs initial or afterRestart phase`);
-    return;
+  const keys = ['target', 'type', 'purpose', 'selector'];
+  if (Object.hasOwn(action, 'timeoutMs')) {
+    keys.push('timeoutMs');
+    assert.ok(Number.isInteger(action.timeoutMs) && action.timeoutMs >= 1_000 && action.timeoutMs <= 120_000, `${name} timeoutMs must be 1000-120000`);
   }
-  validateSelector(action, name, selectors);
-  if (action.type === 'setValue') required(typeof action.value === 'string', `${name} setValue needs value`);
-  if (['clickText', 'assertText', 'waitText', 'assertNotTextStable'].includes(action.type)) {
-    required(typeof action.contains === 'string' && action.contains.length > 0, `${name} ${action.type} needs contains`);
+  if (action.type === 'setValue') {
+    keys.push('value');
+    assert.ok(typeof action.value === 'string' && action.value.length > 0 && action.value.length <= 256, `${name} setValue needs a bounded value`);
+  }
+  if (['clickText', 'waitText', 'assertExactText', 'assertNotTextStable'].includes(action.type)) {
+    keys.push('contains');
+    assert.ok(typeof action.contains === 'string' && action.contains.length > 0 && action.contains.length <= 256, `${name} ${action.type} needs bounded text`);
   }
   if (action.type === 'assertNotTextStable') {
+    keys.push('stabilityMs');
     assert.ok(Number.isInteger(action.stabilityMs) && action.stabilityMs >= 1_000 && action.stabilityMs <= 60_000, `${name} stabilityMs must be 1000-60000`);
   }
   if (action.type === 'captureIdentity') {
+    keys.push('saveAs');
     assert.ok(['actualIdentityWindows', 'actualIdentityAndroid'].includes(action.saveAs), `${name} has invalid identity destination`);
   }
-  if (action.type === 'captureRouteMarker') {
-    assert.equal(action.saveAs, 'observedRouteNode', `${name} must save observedRouteNode`);
-    required(action.expected === '{{expectedRouteNode}}', `${name} must match the exact expected route node`);
+  if (action.type === 'captureRecoveryPhrase') {
+    keys.push('saveAs');
+    assert.equal(action.target, 'windows', `${name} recovery phrase capture must target Windows`);
+    assert.equal(action.saveAs, 'windowsRecoveryPhrase', `${name} has invalid recovery destination`);
   }
+  if (action.type === 'assertIdentityMatches') {
+    keys.push('matches');
+    assert.ok(['{{actualIdentityWindows}}', '{{actualIdentityAndroid}}'].includes(action.matches), `${name} identity comparison must use a captured identity`);
+  }
+  exactKeys(action, keys, name);
+  validateSelector(action, name, selectors);
+}
+
+function hasAction(actions, predicate) {
+  return actions.some(predicate);
 }
 
 function requirePurpose(actions, purpose, predicate = () => true) {
@@ -230,243 +283,217 @@ function requireOrderedPurposes(flowName, actions, purposes) {
   }
 }
 
+function requireExactState(actions, purpose, target, selectorRole, state) {
+  requirePurpose(actions, purpose, action => action.target === target && action.type === 'assertExactText' && action.selector.role === selectorRole && action.contains === state);
+}
+
 export function validateConfig(config) {
-  assert.equal(config?.version, 3, 'physical E2E config.version must be 3');
+  required(config && typeof config === 'object' && !Array.isArray(config), 'physical E2E config must be an object');
+  exactKeys(config, ['version', 'compose', 'android', 'windows', 'limits', 'selectors', 'flows'], 'physical E2E config');
+  assert.equal(config.version, CONFIG_VERSION, `physical E2E config.version must be ${CONFIG_VERSION}`);
   rejectSecrets(config);
+  assert.equal(LEGACY_SESSION_SURFACE.test(JSON.stringify(config)), false, 'physical E2E config must not contain Session identity semantics');
 
   const compose = required(config.compose, 'compose configuration is required');
+  exactKeys(compose, ['file', 'project', 'services', 'endpointPins'], 'compose');
   assert.ok(typeof compose.file === 'string' && isAbsolute(compose.file), 'compose.file must be an absolute path');
-  required(typeof compose.project === 'string' && compose.project.length > 0, 'compose.project is required');
-  assert.ok(Array.isArray(compose.services) && compose.services.length > 0, 'compose.services is required');
+  assert.match(compose.project, /^[a-z0-9][a-z0-9_-]{2,62}$/, 'compose.project must be a safe local project name');
+  assert.ok(Array.isArray(compose.services) && compose.services.length >= 1 && compose.services.length <= 16, 'compose.services must contain 1-16 services');
   assert.equal(new Set(compose.services).size, compose.services.length, 'compose.services must be unique');
+  assert.ok(compose.services.every(service => /^[a-z0-9][a-z0-9_-]{1,62}$/.test(service)), 'compose.services contains an invalid service name');
   assert.equal(compose.endpointPins?.length, compose.services.length, 'every compose service needs exactly one successful endpoint pin');
   const normalizedEndpointUrls = new Set();
   for (const service of compose.services) {
     const pins = compose.endpointPins.filter(pin => pin.service === service);
     assert.equal(pins.length, 1, `compose service '${service}' needs exactly one endpoint pin`);
     const [pin] = pins;
+    exactKeys(pin, ['service', 'url', 'expectedStatus', 'expectedBuildSha256'], `endpoint pin '${service}'`);
     const normalizedUrl = normalizeEndpointUrl(pin.url);
     assert.equal(normalizedEndpointUrls.has(normalizedUrl), false, `endpoint pin '${service}' reuses another service URL`);
     normalizedEndpointUrls.add(normalizedUrl);
     assert.equal(pin.expectedStatus, 200, `endpoint pin '${service}' must require HTTP 200`);
-    assert.equal(Object.hasOwn(pin, 'bodyIncludes'), false, `endpoint pin '${service}' must not use a substring body marker`);
+    assert.match(pin.expectedBuildSha256, EVIDENCE_DIGEST, `endpoint pin '${service}' must pin a build SHA-256`);
+    assert.notEqual(pin.expectedBuildSha256, '0'.repeat(64), `endpoint pin '${service}' build SHA-256 cannot be empty`);
   }
 
   const android = required(config.android, 'android configuration is required');
+  exactKeys(android, ['serial', 'packageName', 'launchActivity', 'apkPath', 'identityPattern', 'driver'], 'android');
   assert.equal(android.serial, ANDROID_SERIAL, `android.serial must pin ${ANDROID_SERIAL}`);
   assert.equal(android.packageName, ANDROID_PACKAGE, `android.packageName must pin ${ANDROID_PACKAGE}`);
   assert.equal(android.launchActivity, ANDROID_LAUNCH_ACTIVITY, `android.launchActivity must pin ${ANDROID_LAUNCH_ACTIVITY}`);
   assert.ok(typeof android.apkPath === 'string' && isAbsolute(android.apkPath), 'android.apkPath must be absolute');
-  assert.match(android.attachmentDirectory, /^\/sdcard\/[A-Za-z0-9_./-]+$/, 'android.attachmentDirectory must be an absolute /sdcard path');
-  assert.equal(android.attachmentDirectory.split('/').some(part => part === '.' || part === '..'), false, 'android.attachmentDirectory cannot traverse directories');
-  assert.equal(android.driver?.capabilities?.alwaysMatch?.platformName, 'Android', 'Android driver platformName must be Android');
+  assert.equal(android.identityPattern, DEEP_ID_PATTERN, 'android.identityPattern must enforce one canonical permanent Deep ID');
+  exactKeys(android.driver, ['url', 'capabilities'], 'android.driver');
+  exactKeys(android.driver.capabilities, ['alwaysMatch'], 'android.driver.capabilities');
+  exactKeys(android.driver.capabilities.alwaysMatch, ['platformName', 'appium:automationName'], 'android.driver.capabilities.alwaysMatch');
+  assert.equal(android.driver.capabilities.alwaysMatch.platformName, 'Android', 'Android driver platformName must be Android');
   assert.equal(android.driver.capabilities.alwaysMatch['appium:automationName'], 'UiAutomator2', 'Android driver must use UiAutomator2');
-  for (const managed of ['appium:app', 'appium:udid', 'appium:appPackage', 'appium:appActivity']) {
-    assert.equal(Object.hasOwn(android.driver.capabilities.alwaysMatch, managed), false, `runner exclusively manages Android capability '${managed}'`);
-  }
-  required(android.driver.url, 'android.driver.url is required');
-  assert.equal(android.identityPattern, '^05[0-9a-fA-F]{64}$', 'android.identityPattern must enforce a full Deep identity');
+  normalizeEndpointUrl(android.driver.url);
 
   const windows = required(config.windows, 'windows configuration is required');
+  exactKeys(windows, ['exePath', 'processName', 'appDataRoot', 'launchTimeoutMs', 'launchPollMs', 'identityPattern', 'driver'], 'windows');
   assert.ok(typeof windows.exePath === 'string' && isAbsolute(windows.exePath), 'windows.exePath must be absolute');
-  required(typeof windows.processName === 'string' && windows.processName.length > 0, 'windows.processName is required');
+  assert.match(windows.processName, /^[A-Za-z0-9_.-]+\.exe$/, 'windows.processName must be a bounded executable name');
   assert.ok(typeof windows.appDataRoot === 'string' && isAbsolute(windows.appDataRoot), 'windows.appDataRoot must be absolute');
+  assert.match(basename(windows.appDataRoot), /e2e/i, 'windows.appDataRoot must be a dedicated E2E root');
   assert.ok(Number.isInteger(windows.launchTimeoutMs) && windows.launchTimeoutMs >= 1_000 && windows.launchTimeoutMs <= 60_000, 'windows.launchTimeoutMs must be 1000-60000');
   assert.ok(Number.isInteger(windows.launchPollMs) && windows.launchPollMs >= 50 && windows.launchPollMs <= 1_000, 'windows.launchPollMs must be 50-1000');
-  assert.equal(windows.driver?.capabilities?.alwaysMatch?.platformName, 'Windows', 'Windows driver platformName must be Windows');
-  for (const managed of ['appium:app', 'appium:appTopLevelWindow', 'deep:processId', 'deep:executableSha256']) {
-    assert.equal(Object.hasOwn(windows.driver.capabilities.alwaysMatch, managed), false, `runner exclusively manages Windows capability '${managed}'`);
-  }
-  required(windows.driver.url, 'windows.driver.url is required');
-  assert.equal(windows.identityPattern, '^05[0-9a-fA-F]{64}$', 'windows.identityPattern must enforce a full Deep identity');
-  assert.ok(typeof windows.downloadDirectory === 'string' && isAbsolute(windows.downloadDirectory), 'windows.downloadDirectory must be absolute');
-  assert.equal(basename(windows.downloadDirectory).toLowerCase(), 'deep', 'windows.downloadDirectory must be the production Downloads\\Deep directory');
-  assert.equal(basename(dirname(windows.downloadDirectory)).toLowerCase(), 'downloads', 'windows.downloadDirectory parent must be Downloads');
-  assert.ok(typeof config.attachmentPath === 'string' && isAbsolute(config.attachmentPath), 'attachmentPath must be an absolute local fixture path');
+  assert.equal(windows.identityPattern, DEEP_ID_PATTERN, 'windows.identityPattern must enforce one canonical permanent Deep ID');
+  exactKeys(windows.driver, ['url', 'capabilities'], 'windows.driver');
+  exactKeys(windows.driver.capabilities, ['alwaysMatch'], 'windows.driver.capabilities');
+  exactKeys(windows.driver.capabilities.alwaysMatch, ['platformName'], 'windows.driver.capabilities.alwaysMatch');
+  assert.equal(windows.driver.capabilities.alwaysMatch.platformName, 'Windows', 'Windows driver platformName must be Windows');
+  normalizeEndpointUrl(windows.driver.url);
+
+  const limits = required(config.limits, 'limits are required');
+  exactKeys(limits, ['runTimeoutMs', 'cleanupTimeoutMs', 'maxActionsPerFlow', 'maxTotalActions', 'maxEvidenceBytes', 'offlineProbeTimeoutMs', 'offlineProbePollMs', 'longOfflineMs'], 'limits');
+  assert.ok(Number.isInteger(limits.runTimeoutMs) && limits.runTimeoutMs >= 60_000 && limits.runTimeoutMs <= 1_800_000, 'limits.runTimeoutMs must be 60000-1800000');
+  assert.ok(Number.isInteger(limits.cleanupTimeoutMs) && limits.cleanupTimeoutMs >= 10_000 && limits.cleanupTimeoutMs <= 120_000, 'limits.cleanupTimeoutMs must be 10000-120000');
+  assert.ok(Number.isInteger(limits.maxActionsPerFlow) && limits.maxActionsPerFlow >= 8 && limits.maxActionsPerFlow <= 64, 'limits.maxActionsPerFlow must be 8-64');
+  assert.ok(Number.isInteger(limits.maxTotalActions) && limits.maxTotalActions >= 64 && limits.maxTotalActions <= 256, 'limits.maxTotalActions must be 64-256');
+  assert.ok(Number.isInteger(limits.maxEvidenceBytes) && limits.maxEvidenceBytes >= 16_384 && limits.maxEvidenceBytes <= 262_144, 'limits.maxEvidenceBytes must be 16384-262144');
+  assert.ok(Number.isInteger(limits.offlineProbeTimeoutMs) && limits.offlineProbeTimeoutMs >= 1_000 && limits.offlineProbeTimeoutMs <= 60_000, 'limits.offlineProbeTimeoutMs must be 1000-60000');
+  assert.ok(Number.isInteger(limits.offlineProbePollMs) && limits.offlineProbePollMs >= 100 && limits.offlineProbePollMs <= 5_000, 'limits.offlineProbePollMs must be 100-5000');
+  assert.ok(Number.isInteger(limits.longOfflineMs) && limits.longOfflineMs >= 30_000 && limits.longOfflineMs <= 600_000, 'limits.longOfflineMs must be 30000-600000');
 
   const selectors = required(config.selectors, 'platform selector maps are required');
-  assert.deepEqual(Object.keys(selectors).sort(), ['android', 'windows'], 'selector maps must contain exact android/windows platforms');
+  exactKeys(selectors, ['android', 'windows'], 'selectors');
   for (const platform of ['android', 'windows']) {
     const map = required(selectors[platform], `${platform} selector map is required`);
-    assert.deepEqual(Object.keys(map).sort(), [...PLATFORM_SELECTOR_ROLES[platform]].sort(), `${platform} selector roles must match the v3 schema exactly`);
+    assert.deepEqual(Object.keys(map).sort(), [...PLATFORM_SELECTOR_ROLES[platform]].sort(), `${platform} selector roles must match the v4 schema exactly`);
     for (const [role, selector] of Object.entries(map)) {
       assert.match(role, /^[A-Za-z][A-Za-z0-9]*$/, `${platform} selector role is invalid`);
       required(selector && typeof selector === 'object', `${platform}.${role} selector is invalid`);
+      exactKeys(selector, ['using', 'value'], `${platform}.${role}`);
       required(SEMANTIC_LOCATORS.has(selector.using), `${platform}.${role} must use accessibility id or id`);
-      required(typeof selector.value === 'string' && selector.value.length > 0, `${platform}.${role} selector value is required`);
+      assert.ok(typeof selector.value === 'string' && selector.value.length > 0 && selector.value.length <= 160, `${platform}.${role} selector value is required and bounded`);
     }
   }
 
   const flows = required(config.flows, 'flows are required');
-  assert.deepEqual(Object.keys(flows).sort(), [...REQUIRED_FLOWS].sort(), 'physical E2E flows must match the v3 schema exactly');
+  assert.deepEqual(Object.keys(flows).sort(), [...REQUIRED_FLOWS].sort(), 'physical E2E flows must match the v4 schema exactly');
+  let totalActions = 0;
   for (const flow of REQUIRED_FLOWS) {
     assert.ok(Array.isArray(flows[flow]) && flows[flow].length > 0, `required flow '${flow}' is missing`);
+    assert.ok(flows[flow].length <= limits.maxActionsPerFlow, `${flow} exceeds limits.maxActionsPerFlow`);
     flows[flow].forEach((action, index) => validateAction(action, `flows.${flow}[${index}]`, selectors));
     const purposes = flows[flow].map(action => action.purpose);
-    assert.ok(purposes.every(purpose => typeof purpose === 'string' && purpose.length > 0), `${flow} actions need explicit purposes`);
     assert.equal(new Set(purposes).size, purposes.length, `${flow} action purposes must be unique`);
+    totalActions += flows[flow].length;
   }
+  assert.ok(totalActions <= limits.maxTotalActions, 'physical E2E flows exceed limits.maxTotalActions');
 
-  const bootstrap = flows.bootstrapIdentity;
-  requirePurpose(bootstrap, 'windowsWelcomeVisible', action => action.target === 'windows' && action.type === 'waitVisible');
-  requirePurpose(bootstrap, 'windowsDisplayName', action => action.target === 'windows' && action.type === 'setValue' && action.value.includes('{{bootstrapWindowsName}}'));
-  requirePurpose(bootstrap, 'windowsCreateIdentity', action => action.target === 'windows' && action.type === 'click');
-  requirePurpose(bootstrap, 'windowsConversationsReady', action => action.target === 'windows' && action.type === 'waitVisible');
-  requirePurpose(bootstrap, 'captureWindowsIdentity', action => action.target === 'windows' && action.type === 'captureIdentity' && action.saveAs === 'actualIdentityWindows');
-  requirePurpose(bootstrap, 'androidConversationsReady', action => action.target === 'android' && action.type === 'waitVisible');
-  requirePurpose(bootstrap, 'captureAndroidIdentity', action => action.target === 'android' && action.type === 'captureIdentity' && action.saveAs === 'actualIdentityAndroid');
-  requireOrderedPurposes('bootstrapIdentity', bootstrap, [
-    'windowsWelcomeVisible',
-    'windowsDisplayName',
-    'windowsCreateIdentity',
-    'windowsConversationsReady',
-    'captureWindowsIdentity',
-    'androidConversationsReady',
-    'captureAndroidIdentity'
+  const create = flows.offlineAccountCreate;
+  requireExactState(create, 'offlineNoCallbackBeforeCreate', 'windows', 'networkCallbackCount', '0');
+  requirePurpose(create, 'windowsDisplayName', action => action.target === 'windows' && action.type === 'setValue' && action.value === '{{bootstrapWindowsName}}');
+  requirePurpose(create, 'windowsCreateIdentity', action => action.target === 'windows' && action.type === 'click');
+  requirePurpose(create, 'windowsConversationsReady', action => action.target === 'windows' && action.type === 'waitVisible');
+  requireExactState(create, 'offlineNoCallbackAfterCreate', 'windows', 'networkCallbackCount', '0');
+  requirePurpose(create, 'captureWindowsIdentity', action => action.type === 'captureIdentity' && action.saveAs === 'actualIdentityWindows');
+  requirePurpose(create, 'captureWindowsRecoveryPhrase', action => action.type === 'captureRecoveryPhrase' && action.saveAs === 'windowsRecoveryPhrase');
+  requireOrderedPurposes('offlineAccountCreate', create, [
+    'offlineNoCallbackBeforeCreate', 'windowsDisplayName', 'windowsCreateIdentity',
+    'windowsConversationsReady', 'offlineNoCallbackAfterCreate', 'captureWindowsIdentity',
+    'captureWindowsRecoveryPhrase'
   ]);
 
-  const invalid = flows.invalidIdentity;
-  const invalidTarget = invalid.find(action => action.purpose === 'invalidIdentityEntry')?.target;
-  requirePurpose(invalid, 'invalidIdentityEntry', action => action.type === 'setValue' && action.value.includes('{{invalidIdentity}}'));
-  requirePurpose(invalid, 'invalidIdentitySubmit', action => action.target === invalidTarget && action.type === 'click');
-  requirePurpose(invalid, 'invalidIdentityRejection', action => action.target === invalidTarget && action.type === 'assertText');
-  requirePurpose(invalid, 'invalidIdentityContactAbsent', action => action.target === invalidTarget && action.type === 'assertNotTextStable' && action.contains.includes('{{invalidIdentity}}'));
-  requireOrderedPurposes('invalidIdentity', invalid, [
-    'invalidIdentityEntry',
-    'invalidIdentitySubmit',
-    'invalidIdentityRejection',
-    'invalidIdentityContactAbsent'
+  const restore = flows.offlineAccountRestore;
+  requirePurpose(restore, 'resetWindowsProfile', action => action.type === 'resetWindowsProfile');
+  requireExactState(restore, 'offlineNoCallbackBeforeRestore', 'windows', 'networkCallbackCount', '0');
+  requirePurpose(restore, 'restorePhraseEntry', action => action.type === 'setValue' && action.value === '{{windowsRecoveryPhrase}}');
+  requirePurpose(restore, 'restoreSubmit', action => action.type === 'click');
+  requirePurpose(restore, 'restoreConversationsReady', action => action.type === 'waitVisible');
+  requireExactState(restore, 'offlineNoCallbackAfterRestore', 'windows', 'networkCallbackCount', '0');
+  requirePurpose(restore, 'assertRestoredWindowsIdentity', action => action.type === 'assertIdentityMatches' && action.matches === '{{actualIdentityWindows}}');
+  requirePurpose(restore, 'offlineServicesRestore', action => action.type === 'restoreServicesOnline');
+  requireOrderedPurposes('offlineAccountRestore', restore, [
+    'resetWindowsProfile', 'offlineNoCallbackBeforeRestore', 'restorePhraseEntry',
+    'restoreSubmit', 'restoreConversationsReady', 'offlineNoCallbackAfterRestore',
+    'assertRestoredWindowsIdentity', 'offlineServicesRestore'
   ]);
 
-  const mutual = flows.mutualIdentity;
-  for (const [target, identity, marker] of [
-    ['windows', '{{actualIdentityAndroid}}', '{{contactMarkerAndroid}}'],
-    ['android', '{{actualIdentityWindows}}', '{{contactMarkerWindows}}']
-  ]) {
-    requirePurpose(mutual, `addIdentityOn${target}`, action => action.target === target && action.type === 'setValue' && action.value.includes(identity));
-    requirePurpose(mutual, `setMarkerOn${target}`, action => action.target === target && action.type === 'setValue' && action.value.includes(marker));
-    requirePurpose(mutual, `submitContactOn${target}`, action => action.target === target && action.type === 'click');
-    requirePurpose(mutual, `contactPresentOn${target}`, action => action.target === target && action.type === 'waitText' && action.contains.includes(marker));
-  }
-  requireOrderedPurposes('mutualIdentity', mutual, [
-    'addIdentityOnwindows',
-    'setMarkerOnwindows',
-    'submitContactOnwindows',
-    'contactPresentOnwindows',
-    'addIdentityOnandroid',
-    'setMarkerOnandroid',
-    'submitContactOnandroid',
-    'contactPresentOnandroid'
+  const contact = flows.reciprocalContact;
+  requirePurpose(contact, 'captureAndroidIdentity', action => action.type === 'captureIdentity' && action.saveAs === 'actualIdentityAndroid');
+  requirePurpose(contact, 'windowsImportAndroidDeepId', action => action.target === 'windows' && action.type === 'setValue' && action.value === '{{actualIdentityAndroid}}');
+  requireExactState(contact, 'windowsContactPending', 'windows', 'contactPending', 'Pending');
+  requirePurpose(contact, 'androidImportWindowsDeepId', action => action.target === 'android' && action.type === 'setValue' && action.value === '{{actualIdentityWindows}}');
+  requireExactState(contact, 'androidContactPending', 'android', 'contactPending', 'Pending');
+  requireExactState(contact, 'windowsContactVerified', 'windows', 'contactVerified', 'Verified');
+  requireExactState(contact, 'androidContactVerified', 'android', 'contactVerified', 'Verified');
+  requireOrderedPurposes('reciprocalContact', contact, [
+    'captureAndroidIdentity', 'windowsImportAndroidDeepId', 'windowsContactPending',
+    'androidImportWindowsDeepId', 'androidContactPending', 'windowsContactVerified',
+    'androidContactVerified'
   ]);
 
   for (const [flow, sender, receiver, marker] of [
     ['windowsToAndroidText', 'windows', 'android', '{{windowsToAndroidMessage}}'],
     ['androidToWindowsText', 'android', 'windows', '{{androidToWindowsMessage}}']
   ]) {
-    requirePurpose(flows[flow], 'messageEntry', action => action.target === sender && action.type === 'setValue' && action.value.includes(marker));
+    requirePurpose(flows[flow], 'messageEntry', action => action.target === sender && action.type === 'setValue' && action.value === marker);
     requirePurpose(flows[flow], 'messageSend', action => action.target === sender && action.type === 'click');
-    requirePurpose(flows[flow], 'messageReceive', action => action.target === receiver && action.type === 'waitText' && action.contains.includes(marker));
+    requirePurpose(flows[flow], 'messageReceive', action => action.target === receiver && action.type === 'waitText' && action.contains === marker);
     requireOrderedPurposes(flow, flows[flow], ['messageEntry', 'messageSend', 'messageReceive']);
   }
 
-  const attachment = flows.androidToWindowsAttachment;
-  requirePurpose(attachment, 'attachmentMenuOpen', action => action.target === 'android' && action.type === 'click');
-  requirePurpose(attachment, 'attachmentPickerOpen', action => action.target === 'android' && action.type === 'click');
-  requirePurpose(attachment, 'attachmentDownloadsOpen', action => action.target === 'android' && action.type === 'clickText');
-  requirePurpose(attachment, 'attachmentPick', action => action.target === 'android' && action.type === 'clickText' && action.contains.includes('{{attachmentName}}'));
-  requirePurpose(attachment, 'attachmentStaged', action => action.target === 'android' && action.type === 'waitText' && action.contains.includes('{{attachmentName}}'));
-  requirePurpose(attachment, 'attachmentSend', action => action.target === 'android' && action.type === 'click');
-  requirePurpose(attachment, 'attachmentListed', action => action.target === 'windows' && action.type === 'waitText' && action.contains.includes('{{attachmentName}}'));
-  requirePurpose(attachment, 'attachmentDownload', action => action.target === 'windows' && action.type === 'clickText');
-  requirePurpose(attachment, 'attachmentInitialHash', action => action.type === 'assertDownloadedAttachment' && action.phase === 'initial');
-  requireOrderedPurposes('androidToWindowsAttachment', attachment, [
-    'attachmentMenuOpen',
-    'attachmentPickerOpen',
-    'attachmentDownloadsOpen',
-    'attachmentPick',
-    'attachmentStaged',
-    'attachmentSend',
-    'attachmentListed',
-    'attachmentDownload',
-    'attachmentInitialHash'
+  const group = flows.smallClosedGroup;
+  requirePurpose(group, 'groupNameEntry', action => action.target === 'windows' && action.type === 'setValue' && action.value === '{{groupName}}');
+  requirePurpose(group, 'groupInviteDeepIdEntry', action => action.target === 'windows' && action.type === 'setValue' && action.value === '{{actualIdentityAndroid}}');
+  requireExactState(group, 'groupInvitePending', 'windows', 'groupStatePending', 'Pending');
+  requirePurpose(group, 'groupInviteAccept', action => action.target === 'android' && action.type === 'click');
+  requireExactState(group, 'groupActiveOnAndroid', 'android', 'groupStateActive', 'Active');
+  requireExactState(group, 'groupActiveOnWindows', 'windows', 'groupStateActive', 'Active');
+  requirePurpose(group, 'groupMessageEntry', action => action.target === 'windows' && action.type === 'setValue' && action.value === '{{groupMessage}}');
+  requirePurpose(group, 'groupMessageReceive', action => action.target === 'android' && action.type === 'waitText' && action.contains === '{{groupMessage}}');
+  requirePurpose(group, 'groupRemoveMember', action => action.target === 'windows' && action.type === 'click');
+  requireExactState(group, 'groupMemberRemovedOnWindows', 'windows', 'groupMemberStateRemoved', 'Removed');
+  requireExactState(group, 'groupRemovedOnAndroid', 'android', 'groupStateRemoved', 'Removed');
+  requirePurpose(group, 'postRemovalMessageEntry', action => action.target === 'windows' && action.type === 'setValue' && action.value === '{{removedExclusionMessage}}');
+  requirePurpose(group, 'removedDeviceExcluded', action => action.target === 'android' && action.type === 'assertNotTextStable' && action.contains === '{{removedExclusionMessage}}');
+  requireOrderedPurposes('smallClosedGroup', group, [
+    'groupNameEntry', 'groupInviteDeepIdEntry', 'groupInvitePending', 'groupInviteAccept',
+    'groupActiveOnAndroid', 'groupActiveOnWindows', 'groupMessageEntry',
+    'groupMessageReceive', 'groupRemoveMember', 'groupMemberRemovedOnWindows',
+    'groupRemovedOnAndroid', 'postRemovalMessageEntry', 'removedDeviceExcluded'
   ]);
 
   const restart = flows.coldRestartVerify;
-  requirePurpose(restart, 'reopenConversation', action => action.target === 'windows' && action.type === 'clickText');
-  requirePurpose(restart, 'attachmentListedAfterRestart', action => action.target === 'windows' && action.type === 'waitText' && action.contains.includes('{{attachmentName}}'));
-  requirePurpose(restart, 'attachmentRedownload', action => action.target === 'windows' && action.type === 'clickText');
-  requirePurpose(restart, 'attachmentRestartHash', action => action.type === 'assertDownloadedAttachment' && action.phase === 'afterRestart');
+  requirePurpose(restart, 'coldRestartClients', action => action.type === 'restartClients');
+  requirePurpose(restart, 'coldWindowsIdentity', action => action.target === 'windows' && action.type === 'assertIdentityMatches' && action.matches === '{{actualIdentityWindows}}');
+  requirePurpose(restart, 'coldAndroidIdentity', action => action.target === 'android' && action.type === 'assertIdentityMatches' && action.matches === '{{actualIdentityAndroid}}');
+  requireExactState(restart, 'coldWindowsContactVerified', 'windows', 'contactVerified', 'Verified');
+  requireExactState(restart, 'coldAndroidContactVerified', 'android', 'contactVerified', 'Verified');
+  requireExactState(restart, 'coldRemovedMemberState', 'windows', 'groupMemberStateRemoved', 'Removed');
+  requirePurpose(restart, 'coldDirectHistoryWindows', action => action.target === 'windows' && action.type === 'waitText' && action.contains === '{{androidToWindowsMessage}}');
+  requirePurpose(restart, 'coldDirectHistoryAndroid', action => action.target === 'android' && action.type === 'waitText' && action.contains === '{{windowsToAndroidMessage}}');
   requireOrderedPurposes('coldRestartVerify', restart, [
-    'reopenConversation',
-    'attachmentListedAfterRestart',
-    'attachmentRedownload',
-    'attachmentRestartHash'
+    'coldRestartClients', 'coldWindowsIdentity', 'coldAndroidIdentity',
+    'coldWindowsContactVerified', 'coldAndroidContactVerified', 'coldRemovedMemberState',
+    'coldDirectHistoryWindows', 'coldDirectHistoryAndroid'
   ]);
 
-  const manual = flows.manualResendAfterRestart;
-  requirePurpose(manual, 'manualRouteCapture', action => action.type === 'captureRouteMarker');
-  requirePurpose(manual, 'manualRouteStop', action => action.type === 'stopObservedRoute');
-  requirePurpose(manual, 'manualMessageEntry', action => action.target === 'windows' && action.type === 'setValue' && action.value.includes('{{manualResendMessage}}'));
-  requirePurpose(manual, 'manualMessageSend', action => action.target === 'windows' && action.type === 'click');
-  requirePurpose(manual, 'manualFailureObserved', action => action.target === 'windows' && action.type === 'waitText' && action.contains === '!');
-  requirePurpose(manual, 'manualClientsRestart', action => action.type === 'restartClients');
-  requirePurpose(manual, 'manualRouteStart', action => action.type === 'startObservedRoute');
-  requirePurpose(manual, 'manualRetryClick', action => action.target === 'windows' && action.type === 'click');
-  requirePurpose(manual, 'manualDeliveryObserved', action => action.target === 'android' && action.type === 'waitText' && action.contains.includes('{{manualResendMessage}}'));
-  requireOrderedPurposes('manualResendAfterRestart', manual, [
-    'manualRouteCapture', 'manualRouteStop', 'manualMessageEntry', 'manualMessageSend',
-    'manualFailureObserved', 'manualClientsRestart', 'manualRouteStart', 'manualRetryClick',
-    'manualDeliveryObserved'
+  const offline = flows.longOfflineRetry;
+  requirePurpose(offline, 'longOfflineServicesStop', action => action.type === 'takeServicesOffline');
+  requirePurpose(offline, 'longOfflineMessageEntry', action => action.target === 'windows' && action.type === 'setValue' && action.value === '{{longOfflineMessage}}');
+  requirePurpose(offline, 'longOfflineMessageSend', action => action.target === 'windows' && action.type === 'click');
+  requireExactState(offline, 'longOfflineQueued', 'windows', 'deliveryPending', 'Queued');
+  requirePurpose(offline, 'longOfflineRestartClients', action => action.type === 'restartClients');
+  requirePurpose(offline, 'longOfflineWindow', action => action.type === 'waitLongOffline');
+  requirePurpose(offline, 'longOfflineServicesRestore', action => action.type === 'restoreServicesOnline');
+  requirePurpose(offline, 'longOfflineDeliveryObserved', action => action.target === 'android' && action.type === 'waitText' && action.contains === '{{longOfflineMessage}}');
+  requireExactState(offline, 'longOfflineDelivered', 'windows', 'deliveryDelivered', 'Delivered');
+  assert.equal(hasAction(offline, action => /retry/i.test(action.selector?.role ?? '')), false, 'long-offline retry must not use a manual retry selector');
+  requireOrderedPurposes('longOfflineRetry', offline, [
+    'longOfflineServicesStop', 'longOfflineMessageEntry', 'longOfflineMessageSend',
+    'longOfflineQueued', 'longOfflineRestartClients', 'longOfflineWindow',
+    'longOfflineServicesRestore', 'longOfflineDeliveryObserved', 'longOfflineDelivered'
   ]);
-
-  const automatic = flows.automaticRetryAfterRestart;
-  requirePurpose(automatic, 'automaticRouteCapture', action => action.type === 'captureRouteMarker');
-  requirePurpose(automatic, 'automaticRouteStop', action => action.type === 'stopObservedRoute');
-  requirePurpose(automatic, 'automaticMessageEntry', action => action.target === 'windows' && action.type === 'setValue' && action.value.includes('{{automaticRetryMessage}}'));
-  requirePurpose(automatic, 'automaticMessageSend', action => action.target === 'windows' && action.type === 'click');
-  requirePurpose(automatic, 'automaticFailureObserved', action => action.target === 'windows' && action.type === 'waitText' && action.contains === '!');
-  requirePurpose(automatic, 'automaticClientsRestart', action => action.type === 'restartClients');
-  requirePurpose(automatic, 'automaticRouteStart', action => action.type === 'startObservedRoute');
-  requirePurpose(automatic, 'automaticDeliveryObserved', action => action.target === 'android' && action.type === 'waitText' && action.contains.includes('{{automaticRetryMessage}}'));
-  assert.equal(hasAction(automatic, action => action.type === 'click' && action.selector?.role === 'manualRetry'), false, 'automatic retry flow must not click manual retry');
-  requireOrderedPurposes('automaticRetryAfterRestart', automatic, [
-    'automaticRouteCapture', 'automaticRouteStop', 'automaticMessageEntry', 'automaticMessageSend',
-    'automaticFailureObserved', 'automaticClientsRestart', 'automaticRouteStart',
-    'automaticDeliveryObserved'
-  ]);
-
-  assert.equal(config.chaos?.enabled, true, 'route-correlated resend flows require chaos.enabled=true');
-  if (config.chaos?.enabled) {
-    assert.ok(typeof config.chaos.expectedRouteNode === 'string' && config.chaos.expectedRouteNode.length > 0, 'chaos.expectedRouteNode is required');
-    assert.ok(Number.isInteger(config.chaos.healthTimeoutMs) && config.chaos.healthTimeoutMs >= 1_000 && config.chaos.healthTimeoutMs <= 120_000, 'chaos.healthTimeoutMs must be 1000-120000');
-    assert.ok(Number.isInteger(config.chaos.healthPollMs) && config.chaos.healthPollMs >= 100 && config.chaos.healthPollMs <= 5_000, 'chaos.healthPollMs must be 100-5000');
-    validateAction(config.chaos.routeMarker, 'chaos.routeMarker', selectors);
-    assert.equal(config.chaos.routeMarker.type, 'captureRouteMarker', 'chaos.routeMarker must capture an actual route marker');
-    assert.ok(Array.isArray(config.chaos.routeBindings) && config.chaos.routeBindings.length > 0, 'chaos routeNode-to-composeService bindings are required');
-    assert.equal(new Set(config.chaos.routeBindings.map(binding => binding.routeNode)).size, config.chaos.routeBindings.length, 'chaos routeNode bindings must be unique');
-    for (const binding of config.chaos.routeBindings) {
-      assert.ok(typeof binding.routeNode === 'string' && binding.routeNode.length > 0, 'chaos binding routeNode is required');
-      assert.ok(compose.services.includes(binding.composeService), `chaos binding service '${binding.composeService}' is not a compose service`);
-    }
-    assert.equal(config.chaos.routeBindings.filter(binding => binding.routeNode === config.chaos.expectedRouteNode).length, 1, 'expected route node must have exactly one compose service binding');
-    assert.ok(Array.isArray(config.chaos.actions) && config.chaos.actions.length > 0, 'enabled chaos needs actions');
-    for (const action of config.chaos.actions) {
-      assert.equal(action.type, 'restartComposeService', 'only restartComposeService is allowlisted');
-      assert.equal(action.routeRef, '{{observedRouteNode}}', 'chaos action must reference captured route');
-      assert.equal(Object.hasOwn(action, 'service'), false, 'chaos action service must be derived from the route binding');
-      assert.equal(Object.hasOwn(action, 'routeNode'), false, 'chaos action route must use the captured route reference');
-    }
-  }
   return config;
 }
 
 async function defaultCommand(command, args, options = {}) {
   const result = await execFile(command, args, { windowsHide: true, maxBuffer: 16 * 1024 * 1024, ...options });
   return { stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
-}
-
-function now(dependencies = {}) {
-  return (dependencies.now ?? Date.now)();
 }
 
 async function beforeDeadline(work, deadline, label, dependencies = {}) {
@@ -478,52 +505,48 @@ async function beforeDeadline(work, deadline, label, dependencies = {}) {
       timer = setTimeout(() => reject(new Error(`${label} exceeded its deadline`)), remaining);
     });
     const result = await Promise.race([work(remaining), timeout]);
-    assert.ok(now(dependencies) < deadline, `${label} completed after its deadline`);
+    assert.ok(now(dependencies) <= deadline, `${label} completed after its deadline`);
     return result;
   } finally {
     clearTimeout(timer);
   }
 }
 
-export async function endpointProbe(pin, fetchImpl, deadline = now() + 10_000, dependencies = {}) {
+export async function endpointProbe(pin, fetchImpl, deadline, dependencies = {}) {
   const startedAt = now(dependencies);
+  const effectiveDeadline = deadline ?? startedAt + 10_000;
   const response = await beforeDeadline(
-    remaining => fetchImpl(pin.url, { redirect: 'error', signal: AbortSignal.timeout(remaining) }),
-    deadline,
+    remaining => fetchImpl(pin.url, { redirect: 'error', signal: AbortSignal.timeout(Math.max(1, remaining)) }),
+    effectiveDeadline,
     `Endpoint pin ${pin.service} fetch`,
     dependencies
   );
-  assert.equal(response.ok, true, `Endpoint pin ${pin.service} did not return success`);
   assert.equal(response.status, 200, `Endpoint pin ${pin.service} did not return HTTP 200`);
-  const body = await beforeDeadline(
-    () => response.json(),
-    deadline,
-    `Endpoint pin ${pin.service} body`,
-    dependencies
-  ).catch(error => {
-    if (String(error?.message).includes('deadline')) throw error;
-    assert.fail(`Endpoint pin ${pin.service} response must be JSON`);
-  });
+  const body = await beforeDeadline(() => response.json(), effectiveDeadline, `Endpoint pin ${pin.service} body`, dependencies)
+    .catch(error => {
+      if (String(error?.message).includes('deadline')) throw error;
+      assert.fail(`Endpoint pin ${pin.service} response must be JSON`);
+    });
   assert.ok(body && typeof body === 'object' && !Array.isArray(body), `Endpoint pin ${pin.service} response must be a JSON object`);
   assert.equal(body.service, pin.service, `Endpoint pin ${pin.service} response service provenance mismatch`);
+  assert.equal(body.buildSha256, pin.expectedBuildSha256, `Endpoint pin ${pin.service} response build provenance mismatch`);
   return {
     service: pin.service,
     status: response.status,
+    buildSha256: body.buildSha256,
     urlSha256: sha256(normalizeEndpointUrl(pin.url)),
     bodySha256: sha256(JSON.stringify(body)),
     elapsedMs: now(dependencies) - startedAt
   };
 }
 
-export async function waitForEndpointPin(pin, fetchImpl, timeoutMs, pollMs, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms)), dependencies = {}) {
+export async function waitForEndpointPin(pin, fetchImpl, timeoutMs, pollMs, sleep = sleepDefault, dependencies = {}) {
   const startedAt = now(dependencies);
   const deadline = startedAt + timeoutMs;
   let latestError;
   while (now(dependencies) < deadline) {
     try {
-      const result = await endpointProbe(pin, fetchImpl, deadline, dependencies);
-      assert.ok(now(dependencies) < deadline, `Endpoint pin ${pin.service} completed after its deadline`);
-      return { ...result, elapsedMs: now(dependencies) - startedAt };
+      return { ...(await endpointProbe(pin, fetchImpl, deadline, dependencies)), elapsedMs: now(dependencies) - startedAt };
     } catch (error) {
       latestError = error;
       const remaining = deadline - now(dependencies);
@@ -534,6 +557,27 @@ export async function waitForEndpointPin(pin, fetchImpl, timeoutMs, pollMs, slee
   throw latestError ?? new Error(`Endpoint pin ${pin.service} exceeded its deadline`);
 }
 
+export async function waitForEndpointUnavailable(pin, fetchImpl, timeoutMs, pollMs, sleep = sleepDefault, dependencies = {}) {
+  const startedAt = now(dependencies);
+  const deadline = startedAt + timeoutMs;
+  while (now(dependencies) < deadline) {
+    try {
+      await beforeDeadline(
+        remaining => fetchImpl(pin.url, { redirect: 'error', signal: AbortSignal.timeout(Math.max(1, remaining)) }),
+        deadline,
+        `Offline endpoint ${pin.service}`,
+        dependencies
+      );
+    } catch {
+      return { service: pin.service, urlSha256: sha256(normalizeEndpointUrl(pin.url)), unavailable: true, elapsedMs: now(dependencies) - startedAt };
+    }
+    const remaining = deadline - now(dependencies);
+    if (remaining <= 0) break;
+    await sleep(Math.min(pollMs, remaining));
+  }
+  assert.fail(`Endpoint pin ${pin.service} remained reachable during the offline gate`);
+}
+
 function parseAaptBadging(stdout) {
   const match = String(stdout).match(/package:\s+name='([^']+)'\s+versionCode='([^']+)'\s+versionName='([^']+)'/);
   assert.ok(match, 'aapt badging lacks package/version metadata');
@@ -542,7 +586,7 @@ function parseAaptBadging(stdout) {
 
 function parseSigner(stdout) {
   const digest = String(stdout).match(/certificate SHA-256 digest:\s*([0-9a-f:]{64,95})/i)?.[1]?.replaceAll(':', '').toLowerCase();
-  assert.match(digest ?? '', /^[0-9a-f]{64}$/, 'APK signer SHA-256 is missing');
+  assert.match(digest ?? '', EVIDENCE_DIGEST, 'APK signer SHA-256 is missing');
   return digest;
 }
 
@@ -552,16 +596,7 @@ function parseInstalledPackage(stdout) {
   const versionCode = text.match(/versionCode=(\d+)/)?.[1];
   const signatureHex = text.match(/signatures[=:]\s*\[([0-9a-f]+)\]/i)?.[1];
   assert.ok(versionName && versionCode && signatureHex, 'installed dumpsys metadata lacks version or signing identity');
-  return {
-    versionName,
-    versionCode,
-    signingSha256: sha256(Buffer.from(signatureHex, 'hex'))
-  };
-}
-
-function safeUnder(root, candidate) {
-  const rel = relative(resolve(root), resolve(candidate));
-  return rel.length > 0 && !rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel);
+  return { versionName, versionCode, signingSha256: sha256(Buffer.from(signatureHex, 'hex')) };
 }
 
 async function assertNotReparsePoint(path, info, fs, context) {
@@ -581,7 +616,9 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
   const command = dependencies.command ?? defaultCommand;
   const fetchImpl = dependencies.fetch ?? fetch;
   const fs = dependencies.fs ?? fsDefault;
-
+  for (const pin of config.compose.endpointPins) {
+    assert.equal(EXAMPLE_BUILD_SHA256S.has(pin.expectedBuildSha256), false, `endpoint pin '${pin.service}' still uses the checked-in example build SHA-256`);
+  }
   await fs.access(config.compose.file);
   const composeResult = await command('docker', ['compose', '-p', config.compose.project, '-f', config.compose.file, 'ps', '--format', 'json']);
   const containers = parseComposePs(composeResult.stdout);
@@ -591,7 +628,7 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
     assert.equal(String(matching[0].State).toLowerCase(), 'running', `Compose service '${service}' is not running`);
     assert.equal(String(matching[0].Health).toLowerCase(), 'healthy', `Compose service '${service}' is not healthy`);
   }
-  const endpoints = await Promise.all(config.compose.endpointPins.map(pin => endpointProbe(pin, fetchImpl)));
+  const endpoints = await Promise.all(config.compose.endpointPins.map(pin => endpointProbe(pin, fetchImpl, undefined, dependencies)));
 
   const adbState = await command('adb', ['-s', config.android.serial, 'get-state']);
   assert.equal(String(adbState.stdout).trim(), 'device', `ADB serial ${config.android.serial} is not authorized`);
@@ -617,35 +654,22 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
   await fs.access(config.windows.exePath);
   const windowsBytes = await fs.readFile(config.windows.exePath);
   assertArm64WindowsExecutable(windowsBytes);
-  await fs.access(config.attachmentPath);
-  const attachmentLinkInfo = await fs.lstat(config.attachmentPath);
-  await assertNotReparsePoint(config.attachmentPath, attachmentLinkInfo, fs, 'attachment source');
-  const canonicalAttachmentPath = await fs.realpath(config.attachmentPath);
-  assert.equal(canonicalAttachmentPath.toLowerCase(), resolve(config.attachmentPath).toLowerCase(), 'attachment source path is not canonical');
-  const attachmentInfo = await fs.stat(canonicalAttachmentPath);
-  assert.equal(attachmentInfo.isFile(), true, 'attachment source must be a regular file');
-  const attachment = await fs.readFile(canonicalAttachmentPath);
-
   const appDataParent = resolve(config.windows.appDataRoot);
   await fs.mkdir(appDataParent, { recursive: true });
   await assertCanonicalDirectory(appDataParent, fs);
   const runAppData = join(appDataParent, `physical-e2e-${runId}`);
   assert.ok(safeUnder(appDataParent, runAppData), 'unique AppData escaped configured root');
   assert.equal(resolve(runAppData), join(appDataParent, basename(runAppData)), 'unique AppData must be a direct child of configured root');
-  const downloadRoot = resolve(config.windows.downloadDirectory);
   let appDataCreated = false;
   try {
     await fs.mkdir(runAppData, { recursive: false });
     appDataCreated = true;
-    await fs.mkdir(downloadRoot, { recursive: true });
     await assertCanonicalDirectory(runAppData, fs);
-    await assertCanonicalDirectory(downloadRoot, fs);
     await fs.writeFile(join(runAppData, '.deep-e2e-isolated'), 'physical-e2e isolated appdata\n', 'utf8');
   } catch (error) {
     if (appDataCreated) await fs.rm(runAppData, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
-
   return {
     compose: { services: [...config.compose.services], endpoints },
     android: {
@@ -656,19 +680,7 @@ export async function preflight(config, dependencies = {}, runId = randomUUID())
       installed,
       apk: { ...badging, signingSha256, bytes: apkBytes.length, sha256: sha256(apkBytes), path: config.android.apkPath }
     },
-    windows: {
-      exePath: config.windows.exePath,
-      exeSha256: sha256(windowsBytes),
-      bytes: windowsBytes.length,
-      isolatedAppData: runAppData,
-      downloadRoot: await fs.realpath(downloadRoot)
-    },
-    attachment: {
-      path: canonicalAttachmentPath,
-      bytes: attachment.length,
-      sha256: sha256(attachment),
-      sourceIdentity: { dev: attachmentInfo.dev, ino: attachmentInfo.ino }
-    }
+    windows: { exePath: config.windows.exePath, exeSha256: sha256(windowsBytes), bytes: windowsBytes.length, isolatedAppData: runAppData }
   };
 }
 
@@ -687,313 +699,164 @@ async function startDriver(target, requiredCaps, fetchImpl) {
   const capabilities = structuredClone(target.driver.capabilities);
   Object.assign(capabilities.alwaysMatch, requiredCaps);
   const value = await webdriverRequest(fetchImpl, target.driver.url, '/session', {
-    method: 'POST',
-    body: JSON.stringify({ capabilities })
+    method: 'POST', body: JSON.stringify({ capabilities })
   });
-  const sessionId = value.sessionId;
-  assert.ok(sessionId, 'WebDriver session ID is missing');
+  assert.ok(value.sessionId, 'WebDriver session ID is missing');
   for (const [key, expected] of Object.entries(requiredCaps)) {
     assert.equal(value.capabilities?.[key], expected, `WebDriver did not bind capability '${key}'`);
   }
-  return { url: target.driver.url, id: sessionId, binding: requiredCaps };
+  return { url: target.driver.url, id: value.sessionId };
 }
 
 async function stopDriver(driver, fetchImpl) {
   if (!driver) return;
-  const response = await fetchImpl(new URL(`/session/${driver.id}`, driver.url), {
-    method: 'DELETE',
-    signal: AbortSignal.timeout(10_000)
-  });
+  const response = await fetchImpl(new URL(`/session/${driver.id}`, driver.url), { method: 'DELETE', signal: AbortSignal.timeout(10_000) });
   assert.equal(response.ok, true, 'WebDriver session cleanup failed');
 }
 
 async function findElements(driver, selector, fetchImpl) {
   const values = await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/elements`, {
-    method: 'POST',
-    body: JSON.stringify(selector)
+    method: 'POST', body: JSON.stringify(selector)
   });
   assert.ok(Array.isArray(values), `semantic elements '${selector.value}' returned an invalid collection`);
-  const ids = values.map(value => value['element-6066-11e4-a52e-4f735466cecf'] ?? value.ELEMENT)
-    .filter(Boolean);
+  const ids = values.map(value => value['element-6066-11e4-a52e-4f735466cecf'] ?? value.ELEMENT).filter(Boolean);
   const visible = [];
   for (const id of ids) {
-    const displayed = await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/displayed`);
-    if (displayed === true) visible.push(id);
+    if (await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/displayed`) === true) visible.push(id);
   }
   return visible;
-}
-
-async function findExactlyOneElement(driver, selector, fetchImpl) {
-  const ids = await findElements(driver, selector, fetchImpl);
-  assert.equal(ids.length, 1, `semantic selector '${selector.value}' must resolve to exactly one visible element`);
-  return ids[0];
-}
-
-async function waitForExactlyOneElement(driver, selector, fetchImpl, timeoutMs = 20_000, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms))) {
-  const deadline = Date.now() + timeoutMs;
-  let latestCount = 0;
-  do {
-    try {
-      const ids = await findElements(driver, selector, fetchImpl);
-      latestCount = ids.length;
-      if (ids.length === 1) return ids[0];
-      assert.ok(ids.length <= 1, `semantic selector '${selector.value}' is ambiguous (${ids.length} visible elements)`);
-    } catch (error) {
-      if (String(error?.message).includes('ambiguous')) throw error;
-    }
-    await sleep(200);
-  } while (Date.now() < deadline);
-  assert.fail(`semantic selector '${selector.value}' did not resolve to one visible element (last count ${latestCount})`);
-}
-
-async function findExactlyOneElementContainingText(driver, selector, expected, fetchImpl) {
-  const ids = await findElements(driver, selector, fetchImpl);
-  const matches = [];
-  for (const id of ids) {
-    const text = await readElementText(driver, id, fetchImpl);
-    if (text.includes(expected)) matches.push(id);
-  }
-  assert.equal(matches.length, 1, `semantic selector '${selector.value}' must have exactly one element containing its correlated marker`);
-  return matches[0];
-}
-
-async function waitForExactlyOneElementContainingText(driver, selector, expected, fetchImpl, timeoutMs = 20_000, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms))) {
-  const deadline = Date.now() + timeoutMs;
-  do {
-    try {
-      return await findExactlyOneElementContainingText(driver, selector, expected, fetchImpl);
-    } catch (error) {
-      if (error?.actual !== 0) throw error;
-    }
-    await sleep(200);
-  } while (Date.now() < deadline);
-  assert.fail(`semantic selector '${selector.value}' did not expose one element containing its correlated marker`);
 }
 
 async function readElementText(driver, elementId, fetchImpl) {
   return String(await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${elementId}/text`));
 }
 
-async function waitForText(driver, selector, expected, fetchImpl, timeoutMs = 20_000, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms))) {
-  const deadline = Date.now() + timeoutMs;
-  let latest = '';
+async function waitForExactlyOneElement(driver, selector, fetchImpl, timeoutMs, dependencies) {
+  const deadline = now(dependencies) + (timeoutMs ?? 20_000);
+  let latestCount = 0;
   do {
-    try {
-      const ids = await findElements(driver, selector, fetchImpl);
-      const matches = [];
-      for (const id of ids) {
-        const text = await readElementText(driver, id, fetchImpl);
-        latest = text;
-        if (text.includes(expected)) matches.push(text);
-      }
-      assert.ok(matches.length <= 1, `semantic selector '${selector.value}' produced duplicate correlated markers`);
-      if (matches.length === 1) return matches[0];
-    } catch (error) {
-      if (String(error?.message).includes('duplicate correlated markers')) throw error;
-      // The semantic element may not have reached the accessibility tree yet.
-    }
-    await sleep(200);
-  } while (Date.now() < deadline);
-  assert.fail(`semantic element '${selector.value}' did not receive its correlated marker`);
+    const ids = await findElements(driver, selector, fetchImpl).catch(() => []);
+    latestCount = ids.length;
+    if (ids.length === 1) return ids[0];
+    assert.ok(ids.length <= 1, `semantic selector '${selector.value}' is ambiguous (${ids.length} visible elements)`);
+    await (dependencies.sleep ?? sleepDefault)(200);
+  } while (now(dependencies) < deadline);
+  assert.fail(`semantic selector '${selector.value}' did not resolve to one visible element (last count ${latestCount})`);
 }
 
-async function assertTextAbsentForWindow(driver, selector, forbidden, fetchImpl, stabilityMs, sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms))) {
+async function waitForElementContainingText(driver, selector, expected, fetchImpl, timeoutMs, dependencies) {
+  const deadline = now(dependencies) + (timeoutMs ?? 20_000);
+  do {
+    const ids = await findElements(driver, selector, fetchImpl);
+    const matches = [];
+    for (const id of ids) {
+      if ((await readElementText(driver, id, fetchImpl)).includes(expected)) matches.push(id);
+    }
+    assert.ok(matches.length <= 1, `semantic selector '${selector.value}' produced duplicate correlated markers`);
+    if (matches.length === 1) return matches[0];
+    await (dependencies.sleep ?? sleepDefault)(200);
+  } while (now(dependencies) < deadline);
+  assert.fail(`semantic selector '${selector.value}' did not expose one element containing its correlated marker`);
+}
+
+async function assertTextAbsentForWindow(driver, selector, forbidden, fetchImpl, stabilityMs, dependencies) {
   const intervalMs = 200;
-  const polls = Math.max(2, Math.ceil(stabilityMs / intervalMs) + 1);
-  for (let poll = 0; poll < polls; poll += 1) {
+  const deadline = now(dependencies) + stabilityMs;
+  let polls = 0;
+  do {
     const ids = await findElements(driver, selector, fetchImpl);
     for (const id of ids) {
-      const text = await readElementText(driver, id, fetchImpl);
-      assert.equal(text.includes(forbidden), false, 'invalid identity appeared during the contact-state stability window');
+      assert.equal((await readElementText(driver, id, fetchImpl)).includes(forbidden), false, 'excluded content appeared during the stability window');
     }
-    if (poll + 1 < polls) await sleep(intervalMs);
-  }
-}
-
-export async function verifyDownloadedAttachment(path, downloadRoot, expectedSha256, fs = fsDefault, sourceIdentity) {
-  assert.ok(safeUnder(downloadRoot, path), 'decrypted destination escaped the production Downloads\\Deep root');
-  assert.equal(resolve(path), join(resolve(downloadRoot), basename(path)), 'decrypted destination must be a direct child of Downloads\\Deep');
-  await assertCanonicalDirectory(downloadRoot, fs);
-  const info = await fs.lstat(path);
-  await assertNotReparsePoint(path, info, fs, 'decrypted destination');
-  assert.equal(info.isFile(), true, 'decrypted destination must be a regular file');
-  assert.equal((await fs.realpath(path)).toLowerCase(), resolve(path).toLowerCase(), 'decrypted destination canonical path mismatch');
-  const followedInfo = await fs.stat(path);
-  if (sourceIdentity) {
-    assert.equal(
-      followedInfo.dev === sourceIdentity.dev && followedInfo.ino === sourceIdentity.ino,
-      false,
-      'decrypted destination cannot be the source referent or its hard link'
-    );
-  }
-  const actual = sha256(await fs.readFile(path));
-  assert.equal(actual, expectedSha256, 'decrypted attachment SHA-256 differs from source');
-  return { name: basename(path), sha256: actual, bytes: info.size };
-}
-
-async function waitForDownloadedAttachment(fileContext, expectedSha256, dependencies, timeoutMs = 30_000) {
-  const fs = dependencies.fs ?? fsDefault;
-  const sleep = dependencies.sleep ?? (ms => new Promise(resolveWait => setTimeout(resolveWait, ms)));
-  const deadline = Date.now() + timeoutMs;
-  do {
-    try {
-      return await verifyDownloadedAttachment(
-        fileContext.downloadPath,
-        fileContext.downloadRoot,
-        expectedSha256,
-        fs,
-        fileContext.sourceIdentity
-      );
-    } catch (error) {
-      const retryable = error?.code === 'ENOENT' || String(error?.message).includes('SHA-256 differs');
-      if (!retryable || Date.now() >= deadline) throw error;
-      await sleep(200);
-    }
-  } while (Date.now() < deadline);
-  assert.fail('decrypted attachment did not appear before timeout');
+    polls += 1;
+    if (now(dependencies) < deadline) await (dependencies.sleep ?? sleepDefault)(Math.min(intervalMs, deadline - now(dependencies)));
+  } while (now(dependencies) < deadline || polls < 2);
 }
 
 function resolveSelector(config, definition, variables) {
   const selected = config.selectors[definition.target][definition.selector.role];
-  return {
-    using: selected.using,
-    value: interpolate(selected.value, variables)
-  };
+  return { using: selected.using, value: interpolate(selected.value, variables) };
 }
 
-async function executeActions(drivers, actions, variables, evidence, dependencies, fileContext, config, systemActions = {}) {
+async function executeActions(drivers, actions, variables, evidence, dependencies, config, systemActions, runDeadline) {
   const fetchImpl = dependencies.fetch ?? fetch;
   for (const definition of actions) {
-    if (SYSTEM_ACTIONS.has(definition.type)) {
-      const action = systemActions[definition.type];
-      assert.equal(typeof action, 'function', `System action '${definition.type}' is unavailable`);
-      await action();
-      evidence.actions.push({ type: definition.type, target: definition.target, purpose: definition.purpose });
-      continue;
+    const actionStarted = now(dependencies);
+    await beforeDeadline(async () => {
+      if (SYSTEM_ACTIONS.has(definition.type)) {
+        const action = systemActions[definition.type];
+        assert.equal(typeof action, 'function', `System action '${definition.type}' is unavailable`);
+        await action(definition);
+        return;
+      }
+      const driver = required(drivers[definition.target], `No active ${definition.target} driver`);
+      const selector = resolveSelector(config, definition, variables);
+      if (definition.type === 'waitVisible') {
+        await waitForExactlyOneElement(driver, selector, fetchImpl, definition.timeoutMs, dependencies);
+        return;
+      }
+      if (definition.type === 'waitText') {
+        await waitForElementContainingText(driver, selector, interpolate(definition.contains, variables), fetchImpl, definition.timeoutMs, dependencies);
+        return;
+      }
+      if (definition.type === 'assertNotTextStable') {
+        await assertTextAbsentForWindow(driver, selector, interpolate(definition.contains, variables), fetchImpl, definition.stabilityMs, dependencies);
+        return;
+      }
+      const id = definition.type === 'clickText'
+        ? await waitForElementContainingText(driver, selector, interpolate(definition.contains, variables), fetchImpl, definition.timeoutMs, dependencies)
+        : await waitForExactlyOneElement(driver, selector, fetchImpl, definition.timeoutMs, dependencies);
+      if (definition.type === 'click' || definition.type === 'clickText') {
+        await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/click`, { method: 'POST', body: '{}' });
+      } else if (definition.type === 'setValue') {
+        await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/value`, {
+          method: 'POST', body: JSON.stringify({ text: interpolate(definition.value, variables) })
+        });
+      } else if (definition.type === 'assertExactText') {
+        assert.equal((await readElementText(driver, id, fetchImpl)).trim(), interpolate(definition.contains, variables), `${definition.purpose} state mismatch`);
+      } else if (definition.type === 'captureIdentity') {
+        const identity = (await readElementText(driver, id, fetchImpl)).trim();
+        assert.match(identity, new RegExp(DEEP_ID_PATTERN), `${definition.target} identity is not a canonical Deep ID`);
+        variables[definition.saveAs] = identity;
+        evidence.identityProofs.push({ target: definition.target, deepIdSha256: sha256(identity) });
+      } else if (definition.type === 'captureRecoveryPhrase') {
+        const phrase = (await readElementText(driver, id, fetchImpl)).trim();
+        assert.ok(phrase.length <= 256 && RECOVERY_PHRASE_PATTERN.test(phrase), 'Windows recovery phrase must contain exactly 24 lowercase words');
+        variables[definition.saveAs] = phrase;
+      } else if (definition.type === 'assertIdentityMatches') {
+        const identity = (await readElementText(driver, id, fetchImpl)).trim();
+        assert.match(identity, new RegExp(DEEP_ID_PATTERN), `${definition.target} identity is not a canonical Deep ID`);
+        assert.equal(identity, interpolate(definition.matches, variables), `${definition.target} restored identity changed`);
+        evidence.identityProofs.push({ target: definition.target, deepIdSha256: sha256(identity) });
+      }
+    }, runDeadline, `${evidence.name}.${definition.purpose}`, dependencies);
+    const actionEvidence = {
+      type: definition.type,
+      target: definition.target,
+      purpose: definition.purpose,
+      elapsedMs: now(dependencies) - actionStarted
+    };
+    if (definition.selector) {
+      const selector = resolveSelector(config, definition, variables);
+      actionEvidence.selectorSha256 = sha256(`${selector.using}:${selector.value}`);
     }
-    if (definition.type === 'assertDownloadedAttachment') {
-      const proof = await waitForDownloadedAttachment(
-        fileContext,
-        variables.attachmentSha256,
-        dependencies,
-        definition.timeoutMs
-      );
-      evidence.files.push({ ...proof, phase: definition.phase });
-      continue;
-    }
-    const driver = drivers[definition.target];
-    assert.ok(driver, `No active ${definition.target} driver`);
-    const selector = resolveSelector(config, definition, variables);
-    if (definition.type === 'waitVisible') {
-      await waitForExactlyOneElement(
-        driver,
-        selector,
-        fetchImpl,
-        definition.timeoutMs,
-        dependencies.sleep
-      );
-      evidence.actions.push({
-        type: definition.type,
-        target: definition.target,
-        selectorSha256: sha256(`${selector.using}:${selector.value}`),
-        purpose: definition.purpose
-      });
-      continue;
-    }
-    if (definition.type === 'waitText') {
-      await waitForText(
-        driver,
-        selector,
-        interpolate(definition.contains, variables),
-        fetchImpl,
-        definition.timeoutMs,
-        dependencies.sleep
-      );
-      evidence.actions.push({
-        type: definition.type,
-        target: definition.target,
-        selectorSha256: sha256(`${selector.using}:${selector.value}`),
-        purpose: definition.purpose
-      });
-      continue;
-    }
-    if (definition.type === 'assertText') {
-      await waitForText(
-        driver,
-        selector,
-        interpolate(definition.contains, variables),
-        fetchImpl,
-        definition.timeoutMs,
-        dependencies.sleep
-      );
-      evidence.actions.push({
-        type: definition.type,
-        target: definition.target,
-        selectorSha256: sha256(`${selector.using}:${selector.value}`),
-        purpose: definition.purpose
-      });
-      continue;
-    }
-    if (definition.type === 'assertNotTextStable') {
-      await assertTextAbsentForWindow(
-        driver,
-        selector,
-        interpolate(definition.contains, variables),
-        fetchImpl,
-        definition.stabilityMs,
-        dependencies.sleep
-      );
-      evidence.actions.push({
-        type: definition.type,
-        target: definition.target,
-        selectorSha256: sha256(`${selector.using}:${selector.value}`),
-        purpose: definition.purpose
-      });
-      continue;
-    }
-    const id = definition.type === 'clickText'
-      ? await waitForExactlyOneElementContainingText(
-          driver, selector, interpolate(definition.contains, variables), fetchImpl, definition.timeoutMs, dependencies.sleep)
-      : await waitForExactlyOneElement(driver, selector, fetchImpl, definition.timeoutMs, dependencies.sleep);
-    if (definition.type === 'click') {
-      await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/click`, { method: 'POST', body: '{}' });
-    } else if (definition.type === 'clickText') {
-      await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/click`, { method: 'POST', body: '{}' });
-    } else if (definition.type === 'setValue') {
-      await webdriverRequest(fetchImpl, driver.url, `/session/${driver.id}/element/${id}/value`, {
-        method: 'POST',
-        body: JSON.stringify({ text: interpolate(definition.value, variables) })
-      });
-    } else if (definition.type === 'captureIdentity') {
-      const identity = (await readElementText(driver, id, fetchImpl)).trim();
-      const pattern = definition.target === 'windows' ? variables.windowsIdentityPattern : variables.androidIdentityPattern;
-      assert.match(identity, new RegExp(pattern), `${definition.target} identity did not match configured format`);
-      variables[definition.saveAs] = identity;
-      evidence.identities.push({ target: definition.target, sha256: sha256(identity) });
-    } else if (definition.type === 'captureRouteMarker') {
-      const observed = (await readElementText(driver, id, fetchImpl)).trim();
-      assert.ok(observed.length > 0, 'route marker is empty');
-      assert.equal(observed, interpolate(definition.expected, variables), 'observed route node does not match configured route');
-      variables[definition.saveAs] = observed;
-      evidence.routeMarkerSha256 = sha256(observed);
-    }
-    evidence.actions.push({ type: definition.type, target: definition.target, selectorSha256: sha256(`${selector.using}:${selector.value}`), purpose: definition.purpose });
+    evidence.actions.push(actionEvidence);
   }
 }
 
 function isTransientWindowsProcessError(error) {
-  const message = `${error?.message ?? ''}\n${error?.stderr ?? ''}`.toLowerCase();
-  return /cannot find (a )?process|process (?:was )?not found|no process with (?:the )?(?:process )?identifier|process id .* does not exist/.test(message);
+  const text = String(error?.stderr ?? error?.message ?? error);
+  return /cannot find a process|no process|main window|not ready/i.test(text);
 }
 
 export async function inspectWindowsProcess(command, config, process, dependencies = {}) {
-  assert.ok(Number.isInteger(process?.pid) && process.pid > 0, 'Windows launch did not return a PID');
-  const script = `$ErrorActionPreference='Stop';$p=Get-CimInstance Win32_Process -Filter "ProcessId=${process.pid}";$g=Get-Process -Id ${process.pid};[pscustomobject]@{ProcessId=$p.ProcessId;Name=$p.Name;ExecutablePath=$p.ExecutablePath;MainWindowHandle=[int64]$g.MainWindowHandle}|ConvertTo-Json -Compress`;
+  assert.ok(Number.isInteger(process?.pid) && process.pid > 0, 'spawned Windows process has no PID');
   const startedAt = now(dependencies);
   const deadline = startedAt + config.windows.launchTimeoutMs;
-  const sleep = dependencies.sleep ?? (ms => new Promise(resolveWait => setTimeout(resolveWait, ms)));
+  const sleep = dependencies.sleep ?? sleepDefault;
   let latestError;
   while (now(dependencies) < deadline) {
+    const script = `$ErrorActionPreference='Stop';$p=Get-CimInstance Win32_Process -Filter \"ProcessId=${process.pid}\";if($null -eq $p){throw 'process not ready'};$g=Get-Process -Id ${process.pid};[pscustomobject]@{ProcessId=$p.ProcessId;Name=$p.Name;ExecutablePath=$p.ExecutablePath;MainWindowHandle=$g.MainWindowHandle}|ConvertTo-Json -Compress`;
     try {
       const result = await beforeDeadline(
         remaining => command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: remaining }),
@@ -1001,34 +864,18 @@ export async function inspectWindowsProcess(command, config, process, dependenci
         'Windows process inspection',
         dependencies
       );
-      const stderr = String(result.stderr ?? '').trim();
-      if (stderr) {
-        const stderrError = new Error(stderr);
-        if (isTransientWindowsProcessError(stderrError)) {
-          latestError = stderrError;
-        } else {
-          throw stderrError;
-        }
-      } else {
-        const metadata = JSON.parse(String(result.stdout));
-        if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata) || metadata.ProcessId === null || metadata.ProcessId === undefined) {
-          latestError = new Error('Windows process metadata is not available yet');
-        } else {
-          assert.equal(Number(metadata.ProcessId), process.pid, 'Windows PID provenance mismatch');
-          assert.equal(String(metadata.Name).toLowerCase(), config.windows.processName.toLowerCase(), 'Windows process name mismatch');
-          assert.equal(resolve(metadata.ExecutablePath).toLowerCase(), resolve(config.windows.exePath).toLowerCase(), 'Windows executable provenance mismatch');
-          if (Number(metadata.MainWindowHandle) > 0) {
-            assert.ok(now(dependencies) < deadline, 'Windows process inspection completed after its deadline');
-            return {
-              pid: process.pid,
-              handle: Number(metadata.MainWindowHandle),
-              executablePathSha256: sha256(resolve(metadata.ExecutablePath).toLowerCase()),
-              elapsedMs: now(dependencies) - startedAt
-            };
-          }
-          latestError = new Error('Windows process has no top-level window yet');
-        }
-      }
+      assert.equal(String(result.stderr ?? '').trim(), '', 'Windows process inspection wrote to stderr');
+      const metadata = JSON.parse(String(result.stdout));
+      if (!metadata?.ProcessId || !metadata?.ExecutablePath || Number(metadata.MainWindowHandle) <= 0) throw new Error('Windows main window not ready');
+      assert.equal(Number(metadata.ProcessId), process.pid, 'Windows PID provenance mismatch');
+      assert.equal(String(metadata.Name).toLowerCase(), config.windows.processName.toLowerCase(), 'Windows process name mismatch');
+      assert.equal(resolve(metadata.ExecutablePath).toLowerCase(), resolve(config.windows.exePath).toLowerCase(), 'Windows executable path mismatch');
+      return {
+        pid: process.pid,
+        handle: Number(metadata.MainWindowHandle),
+        executablePathSha256: sha256(resolve(metadata.ExecutablePath).toLowerCase()),
+        elapsedMs: now(dependencies) - startedAt
+      };
     } catch (error) {
       if (!isTransientWindowsProcessError(error)) throw error;
       latestError = error;
@@ -1040,41 +887,36 @@ export async function inspectWindowsProcess(command, config, process, dependenci
   assert.fail(`Windows process did not expose a top-level window within ${config.windows.launchTimeoutMs}ms${latestError ? `: ${latestError.message}` : ''}`);
 }
 
-function sanitizedPreflight(preflightEvidence) {
+function sanitizedPreflight(value) {
   return {
-    compose: preflightEvidence.compose,
+    compose: value.compose,
     android: {
-      serial: preflightEvidence.android.serial,
-      packageName: preflightEvidence.android.packageName,
-      launchActivity: preflightEvidence.android.launchActivity,
-      installed: preflightEvidence.android.installed,
+      serial: value.android.serial,
+      packageName: value.android.packageName,
+      launchActivity: value.android.launchActivity,
+      installed: value.android.installed,
       apk: {
-        packageName: preflightEvidence.android.apk.packageName,
-        versionCode: preflightEvidence.android.apk.versionCode,
-        versionName: preflightEvidence.android.apk.versionName,
-        signingSha256: preflightEvidence.android.apk.signingSha256,
-        bytes: preflightEvidence.android.apk.bytes,
-        sha256: preflightEvidence.android.apk.sha256,
-        path: pathFingerprint(preflightEvidence.android.apk.path)
+        packageName: value.android.apk.packageName,
+        versionCode: value.android.apk.versionCode,
+        versionName: value.android.apk.versionName,
+        signingSha256: value.android.apk.signingSha256,
+        bytes: value.android.apk.bytes,
+        sha256: value.android.apk.sha256,
+        path: pathFingerprint(value.android.apk.path)
       }
     },
     windows: {
-      executable: pathFingerprint(preflightEvidence.windows.exePath),
-      exeSha256: preflightEvidence.windows.exeSha256,
-      bytes: preflightEvidence.windows.bytes,
-      isolatedAppData: pathFingerprint(preflightEvidence.windows.isolatedAppData)
-    },
-    attachment: {
-      source: pathFingerprint(preflightEvidence.attachment.path),
-      bytes: preflightEvidence.attachment.bytes,
-      sha256: preflightEvidence.attachment.sha256
+      executable: pathFingerprint(value.windows.exePath),
+      exeSha256: value.windows.exeSha256,
+      bytes: value.windows.bytes,
+      isolatedAppData: pathFingerprint(value.windows.isolatedAppData)
     }
   };
 }
 
-async function cleanupStep(cleanup, name, action) {
+async function cleanupStep(cleanup, name, action, deadline, dependencies) {
   try {
-    await action();
+    await beforeDeadline(() => action(), deadline, `Cleanup ${name}`, dependencies);
     cleanup.steps.push({ name, succeeded: true });
   } catch {
     cleanup.steps.push({ name, succeeded: false });
@@ -1092,65 +934,220 @@ export async function assertPathAbsent(fs, path, context) {
   assert.fail(`${context} still exists`);
 }
 
+function evidenceCorrelations(markers) {
+  return Object.fromEntries(Object.entries(markers)
+    .filter(([key]) => key !== 'runId')
+    .map(([key, value]) => [key, sha256(value)]));
+}
+
+function visitStrings(value, visitor) {
+  if (typeof value === 'string') {
+    visitor(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach(item => visitStrings(item, visitor));
+    return;
+  }
+  if (value && typeof value === 'object') Object.values(value).forEach(item => visitStrings(item, visitor));
+}
+
+export function validateEvidence(evidence, maxEvidenceBytes) {
+  visitStrings(evidence, value => {
+    assert.equal(/deep1[023456789acdefghjklmnpqrstuvwxyz]{85}/.test(value), false, 'physical evidence contains a plaintext Deep ID');
+    assert.equal(EVIDENCE_RECOVERY_PHRASE.test(value), false, 'physical evidence contains recovery material');
+  });
+  const topLevelFields = ['schemaVersion', 'contract', 'startedAt', 'finishedAt', 'status', 'releaseEligible', 'provenance', 'correlations', 'processes', 'networkPeriods', 'flows', 'cleanup'];
+  if (Object.hasOwn(evidence, 'failure')) topLevelFields.push('failure');
+  exactKeys(evidence, topLevelFields, 'physical evidence');
+  exactKeys(evidence.provenance, ['mode', 'preflight'], 'physical evidence provenance');
+  const preflight = evidence.provenance.preflight;
+  exactKeys(preflight, ['compose', 'android', 'windows'], 'physical evidence preflight');
+  exactKeys(preflight.compose, ['services', 'endpoints'], 'physical evidence compose provenance');
+  assert.ok(Array.isArray(preflight.compose.services) && preflight.compose.services.length >= 1 && preflight.compose.services.length <= 16, 'physical evidence service provenance is unbounded');
+  assert.equal(new Set(preflight.compose.services).size, preflight.compose.services.length, 'physical evidence service provenance is duplicated');
+  assert.equal(preflight.compose.endpoints.length, preflight.compose.services.length, 'physical evidence endpoint provenance is incomplete');
+  const endpointServices = preflight.compose.endpoints.map(endpoint => endpoint.service);
+  assert.deepEqual(endpointServices, preflight.compose.services, 'physical evidence endpoint provenance is reordered or duplicated');
+  for (const endpoint of preflight.compose.endpoints) {
+    exactKeys(endpoint, ['service', 'status', 'buildSha256', 'urlSha256', 'bodySha256', 'elapsedMs'], 'physical evidence endpoint provenance');
+    assert.ok(preflight.compose.services.includes(endpoint.service), 'physical evidence endpoint service is unbound');
+    assert.equal(endpoint.status, 200, 'physical evidence endpoint status is not 200');
+    assert.match(endpoint.buildSha256, EVIDENCE_DIGEST, 'physical evidence endpoint build digest is invalid');
+    assert.match(endpoint.urlSha256, EVIDENCE_DIGEST, 'physical evidence endpoint URL digest is invalid');
+    assert.match(endpoint.bodySha256, EVIDENCE_DIGEST, 'physical evidence endpoint body digest is invalid');
+  }
+  exactKeys(preflight.android, ['serial', 'packageName', 'launchActivity', 'installed', 'apk'], 'physical evidence Android provenance');
+  assert.equal(preflight.android.serial, ANDROID_SERIAL, 'physical evidence Android serial provenance mismatch');
+  assert.equal(preflight.android.packageName, ANDROID_PACKAGE, 'physical evidence Android package provenance mismatch');
+  assert.equal(preflight.android.launchActivity, ANDROID_LAUNCH_ACTIVITY, 'physical evidence Android launcher provenance mismatch');
+  exactKeys(preflight.android.installed, ['versionName', 'versionCode', 'signingSha256'], 'physical evidence installed Android provenance');
+  exactKeys(preflight.android.apk, ['packageName', 'versionCode', 'versionName', 'signingSha256', 'bytes', 'sha256', 'path'], 'physical evidence APK provenance');
+  assert.equal(preflight.android.installed.versionCode, preflight.android.apk.versionCode, 'physical evidence Android versionCode provenance mismatch');
+  assert.equal(preflight.android.installed.versionName, preflight.android.apk.versionName, 'physical evidence Android versionName provenance mismatch');
+  assert.equal(preflight.android.installed.signingSha256, preflight.android.apk.signingSha256, 'physical evidence Android signer provenance mismatch');
+  assert.match(preflight.android.apk.sha256, EVIDENCE_DIGEST, 'physical evidence APK digest is invalid');
+  exactKeys(preflight.android.apk.path, ['basename', 'pathSha256'], 'physical evidence APK path provenance');
+  exactKeys(preflight.windows, ['executable', 'exeSha256', 'bytes', 'isolatedAppData'], 'physical evidence Windows provenance');
+  assert.match(preflight.windows.exeSha256, EVIDENCE_DIGEST, 'physical evidence Windows executable digest is invalid');
+  exactKeys(preflight.windows.executable, ['basename', 'pathSha256'], 'physical evidence Windows path provenance');
+  exactKeys(preflight.windows.isolatedAppData, ['basename', 'pathSha256'], 'physical evidence AppData provenance');
+  assert.equal(evidence.schemaVersion, EVIDENCE_SCHEMA_VERSION, 'physical evidence schema version mismatch');
+  assert.equal(evidence.contract, 'deep-physical-release-critical-v1', 'physical evidence contract mismatch');
+  assert.ok(['passed', 'failed', 'test-only-passed', 'test-only-failed'].includes(evidence.status), 'physical evidence status is invalid');
+  assert.equal(evidence.releaseEligible, evidence.provenance.mode === 'physical', 'release eligibility must derive from physical provenance');
+  if (evidence.releaseEligible) assert.ok(['passed', 'failed'].includes(evidence.status), 'physical evidence must use a physical status');
+  else assert.ok(evidence.status.startsWith('test-only-'), 'test-double evidence cannot use a release status');
+  assert.deepEqual(evidence.flows.map(flow => flow.name), [...REQUIRED_FLOWS], 'physical evidence flows are incomplete or reordered');
+  assert.ok(evidence.flows.every(flow => ['passed', 'failed', 'not-run'].includes(flow.status)), 'physical evidence flow status is invalid');
+  if (evidence.status.endsWith('passed')) assert.ok(evidence.flows.every(flow => flow.status === 'passed'), 'passed evidence contains an incomplete flow');
+  for (const flow of evidence.flows) {
+    exactKeys(flow, ['name', 'status', 'actions', 'identityProofs'], `physical evidence flow '${flow.name}'`);
+    assert.ok(Array.isArray(flow.actions) && flow.actions.length <= 64, `physical evidence flow '${flow.name}' actions are unbounded`);
+    assert.equal(new Set(flow.actions.map(action => action.purpose)).size, flow.actions.length, `physical evidence flow '${flow.name}' action purposes are duplicated`);
+    for (const action of flow.actions) {
+      const fields = ['type', 'target', 'purpose', 'elapsedMs'];
+      if (Object.hasOwn(action, 'selectorSha256')) fields.push('selectorSha256');
+      exactKeys(action, fields, `physical evidence action '${action.purpose}'`);
+      assert.ok(UI_ACTIONS.has(action.type) || SYSTEM_ACTIONS.has(action.type), 'physical evidence action type is invalid');
+      assert.ok(['android', 'windows', 'system'].includes(action.target), 'physical evidence action target is invalid');
+      assert.match(action.purpose, /^[A-Za-z][A-Za-z0-9]{2,79}$/, 'physical evidence action purpose is invalid');
+      assert.ok(Number.isInteger(action.elapsedMs) && action.elapsedMs >= 0, 'physical evidence action elapsedMs is invalid');
+      if (action.selectorSha256) assert.match(action.selectorSha256, EVIDENCE_DIGEST, 'physical evidence selector digest is invalid');
+    }
+    if (flow.status === 'passed') requireOrderedPurposes(flow.name, flow.actions, REQUIRED_EVIDENCE_PURPOSES[flow.name]);
+    assert.ok(Array.isArray(flow.identityProofs) && flow.identityProofs.length <= 4, `physical evidence flow '${flow.name}' identity proofs are unbounded`);
+    for (const proof of flow.identityProofs) {
+      exactKeys(proof, ['target', 'deepIdSha256'], 'physical evidence identity proof');
+      assert.ok(['android', 'windows'].includes(proof.target), 'physical evidence identity target is invalid');
+      assert.match(proof.deepIdSha256, EVIDENCE_DIGEST, 'physical evidence identity digest is invalid');
+    }
+  }
+  assert.ok(Array.isArray(evidence.processes) && evidence.processes.length <= 16, 'physical evidence process list is unbounded');
+  for (const process of evidence.processes) {
+    exactKeys(process, ['phase', 'pid', 'executablePathSha256', 'handleSha256', 'elapsedMs'], 'physical evidence process provenance');
+    assert.ok(['initial', 'restore', 'restart'].includes(process.phase), 'physical evidence process phase is invalid');
+    assert.ok(Number.isInteger(process.pid) && process.pid > 0, 'physical evidence process PID is invalid');
+    assert.match(process.executablePathSha256, EVIDENCE_DIGEST, 'physical evidence process path digest is invalid');
+    assert.match(process.handleSha256, EVIDENCE_DIGEST, 'physical evidence process handle digest is invalid');
+  }
+  assert.ok(Array.isArray(evidence.networkPeriods) && evidence.networkPeriods.length <= 4, 'physical evidence network periods are unbounded');
+  for (const period of evidence.networkPeriods) {
+    exactKeys(period, ['purpose', 'offlineElapsedMs', 'unavailable', 'restored', 'restoredBy'], 'physical evidence network period');
+    assert.ok(Number.isInteger(period.offlineElapsedMs) && period.offlineElapsedMs >= 0, 'physical evidence offline duration is invalid');
+    assert.equal(period.unavailable.length, preflight.compose.services.length, 'physical evidence unavailable-service proof is incomplete');
+    assert.equal(period.restored.length, preflight.compose.services.length, 'physical evidence restored-service proof is incomplete');
+    assert.deepEqual(period.unavailable.map(endpoint => endpoint.service), preflight.compose.services, 'physical evidence unavailable-service proof is reordered or duplicated');
+    assert.deepEqual(period.restored.map(endpoint => endpoint.service), preflight.compose.services, 'physical evidence restored-service proof is reordered or duplicated');
+    for (const unavailable of period.unavailable) {
+      exactKeys(unavailable, ['service', 'urlSha256', 'unavailable', 'elapsedMs'], 'physical evidence unavailable endpoint');
+      assert.equal(unavailable.unavailable, true, 'physical evidence endpoint was not proven unavailable');
+      assert.ok(preflight.compose.services.includes(unavailable.service), 'physical evidence unavailable endpoint is unbound');
+      assert.match(unavailable.urlSha256, EVIDENCE_DIGEST, 'physical evidence unavailable URL digest is invalid');
+    }
+    for (const restored of period.restored) {
+      exactKeys(restored, ['service', 'status', 'buildSha256', 'urlSha256', 'bodySha256', 'elapsedMs'], 'physical evidence restored endpoint');
+      assert.ok(preflight.compose.services.includes(restored.service), 'physical evidence restored endpoint is unbound');
+      assert.equal(restored.status, 200, 'physical evidence restored endpoint status is not 200');
+      assert.match(restored.buildSha256, EVIDENCE_DIGEST, 'physical evidence restored build digest is invalid');
+      assert.match(restored.urlSha256, EVIDENCE_DIGEST, 'physical evidence restored URL digest is invalid');
+      assert.match(restored.bodySha256, EVIDENCE_DIGEST, 'physical evidence restored body digest is invalid');
+    }
+  }
+  exactKeys(evidence.cleanup, ['attempted', 'succeeded', 'steps'], 'physical evidence cleanup');
+  assert.equal(evidence.cleanup.attempted, true, 'physical evidence cleanup was not attempted');
+  assert.ok(Array.isArray(evidence.cleanup.steps) && evidence.cleanup.steps.length <= 8, 'physical evidence cleanup steps are unbounded');
+  for (const step of evidence.cleanup.steps) exactKeys(step, ['name', 'succeeded'], 'physical evidence cleanup step');
+  if (evidence.status.endsWith('passed')) {
+    assert.equal(evidence.cleanup.succeeded, true, 'passed physical evidence requires successful cleanup');
+    assert.ok(evidence.cleanup.steps.every(step => step.succeeded), 'passed physical evidence contains a failed cleanup step');
+    assert.deepEqual(evidence.networkPeriods.map(period => period.purpose), ['offlineAccountCreateRestore', 'longOfflineServicesStop'], 'passed physical evidence has incomplete or reordered offline periods');
+    assert.deepEqual(evidence.processes.map(process => process.phase), ['initial', 'restore', 'restart', 'restart'], 'passed physical evidence has incomplete or reordered process provenance');
+  }
+  if (evidence.failure) exactKeys(evidence.failure, ['name', 'message'], 'physical evidence failure');
+  assert.ok(Object.values(evidence.correlations).every(value => EVIDENCE_DIGEST.test(value)), 'correlation evidence must contain only SHA-256 digests');
+  const serialized = JSON.stringify(evidence);
+  assert.ok(Buffer.byteLength(serialized) <= maxEvidenceBytes, 'physical evidence exceeds limits.maxEvidenceBytes');
+  return evidence;
+}
+
+export function verifyReleaseEvidence(config, evidence) {
+  validateConfig(config);
+  validateEvidence(evidence, config.limits.maxEvidenceBytes);
+  assert.equal(evidence.status, 'passed', 'release gate requires passed physical evidence');
+  assert.equal(evidence.releaseEligible, true, 'release gate requires release-eligible evidence');
+  assert.equal(evidence.provenance.mode, 'physical', 'release gate requires physical provenance');
+  const preflight = evidence.provenance.preflight;
+  assert.deepEqual(preflight.compose.services, config.compose.services, 'release evidence Compose services differ from config');
+  for (let index = 0; index < config.compose.endpointPins.length; index += 1) {
+    const pin = config.compose.endpointPins[index];
+    const endpoint = preflight.compose.endpoints[index];
+    assert.equal(endpoint.service, pin.service, 'release evidence endpoint service differs from config');
+    assert.equal(endpoint.buildSha256, pin.expectedBuildSha256, `release evidence build pin differs for '${pin.service}'`);
+    assert.equal(endpoint.urlSha256, sha256(normalizeEndpointUrl(pin.url)), `release evidence endpoint URL differs for '${pin.service}'`);
+  }
+  assert.equal(preflight.android.apk.path.basename, basename(config.android.apkPath), 'release evidence APK basename differs from config');
+  assert.equal(preflight.android.apk.path.pathSha256, pathFingerprint(config.android.apkPath).pathSha256, 'release evidence APK path differs from config');
+  assert.equal(preflight.windows.executable.basename, basename(config.windows.exePath), 'release evidence Windows executable basename differs from config');
+  assert.equal(preflight.windows.executable.pathSha256, pathFingerprint(config.windows.exePath).pathSha256, 'release evidence Windows executable path differs from config');
+  return evidence;
+}
+
 export async function runPhysicalE2E(config, options = {}) {
   validateConfig(config);
   const artifactsDir = resolve(required(options.artifactsDir, 'artifactsDir is required'));
   const markers = createMarkers(options.runId);
   const dependencies = options.dependencies ?? {};
-  const command = dependencies.command ?? defaultCommand;
+  const injected = Object.keys(dependencies).length > 0;
+  assert.equal(Boolean(options.testOnly), injected, 'injected dependencies require testOnly=true and physical runs forbid testOnly');
+  const rawCommand = dependencies.command ?? defaultCommand;
   const fetchImpl = dependencies.fetch ?? fetch;
   const fs = dependencies.fs ?? fsDefault;
   const launch = dependencies.spawn ?? ((file, args, spawnOptions) => spawnProcess(file, args, spawnOptions));
   const artifactWrite = dependencies.artifactWrite ?? ((path, value) => fs.writeFile(path, value, 'utf8'));
+  const startedMs = now(dependencies);
+  const runDeadline = startedMs + config.limits.runTimeoutMs;
+  let commandDeadline = runDeadline;
+  const command = (file, args, commandOptions = {}) => beforeDeadline(
+    remaining => rawCommand(file, args, { ...commandOptions, timeout: Math.min(commandOptions.timeout ?? remaining, remaining) }),
+    commandDeadline,
+    `Command ${basename(file)}`,
+    dependencies
+  );
+  const boundedDependencies = { ...dependencies, command };
   assert.equal(safeUnder(config.windows.appDataRoot, artifactsDir), false, 'artifactsDir cannot be inside disposable AppData');
   await fs.mkdir(artifactsDir, { recursive: true });
-  const preflightEvidence = await preflight(config, dependencies, markers.runId);
+  const preflightEvidence = await preflight(config, boundedDependencies, markers.runId);
   assert.equal(safeUnder(preflightEvidence.windows.isolatedAppData, artifactsDir), false, 'artifactsDir cannot be inside disposable AppData');
 
-  const androidAttachmentPath = `${config.android.attachmentDirectory.replace(/\/$/, '')}/${markers.attachmentName}`;
-  const downloadPath = join(preflightEvidence.windows.downloadRoot, markers.attachmentName);
-  await assertPathAbsent(fs, downloadPath, 'pre-existing correlated Windows download');
-  const variables = {
-    ...markers,
-    androidAttachmentPath,
-    attachmentSha256: preflightEvidence.attachment.sha256,
-    windowsIdentityPattern: config.windows.identityPattern,
-    androidIdentityPattern: config.android.identityPattern,
-    expectedRouteNode: config.chaos?.expectedRouteNode
-  };
+  const variables = { ...markers };
   const evidence = {
-    schemaVersion: 3,
+    schemaVersion: EVIDENCE_SCHEMA_VERSION,
+    contract: 'deep-physical-release-critical-v1',
     startedAt: new Date().toISOString(),
-    status: 'failed',
-    markers: {
-      runId: markers.runId,
-      invalidIdentity: markers.invalidIdentity,
-      contactMarkerWindows: markers.contactMarkerWindows,
-      contactMarkerAndroid: markers.contactMarkerAndroid,
-      windowsToAndroidMessage: markers.windowsToAndroidMessage,
-      androidToWindowsMessage: markers.androidToWindowsMessage,
-      manualResendMessage: markers.manualResendMessage,
-      automaticRetryMessage: markers.automaticRetryMessage,
-      attachmentName: markers.attachmentName
-    },
-    preflight: sanitizedPreflight(preflightEvidence),
+    finishedAt: null,
+    status: options.testOnly ? 'test-only-failed' : 'failed',
+    releaseEligible: !options.testOnly,
+    provenance: { mode: options.testOnly ? 'test-double' : 'physical', preflight: sanitizedPreflight(preflightEvidence) },
+    correlations: evidenceCorrelations(markers),
     processes: [],
-    flows: [],
-    files: [],
+    networkPeriods: [],
+    flows: REQUIRED_FLOWS.map(name => ({ name, status: 'not-run', actions: [], identityProofs: [] })),
     cleanup: { attempted: false, succeeded: true, steps: [] }
   };
   const drivers = { android: undefined, windows: undefined };
+  const stoppedServices = new Set();
   let activeWindowsProcess;
+  let previousPid;
+  let activeOfflinePeriod;
   let mainError;
   let cleanupError;
   let artifactError;
   let runSucceeded = false;
-  let previousPid;
-  let stoppedRouteService;
 
   const launchWindows = async phase => {
     const isolated = preflightEvidence.windows.isolatedAppData;
-    const child = launch(config.windows.exePath, config.windows.arguments ?? [], {
+    const child = launch(config.windows.exePath, [], {
       detached: false,
       stdio: 'ignore',
       windowsHide: true,
@@ -1164,7 +1161,7 @@ export async function runPhysicalE2E(config, options = {}) {
     });
     activeWindowsProcess = child;
     const provenance = await inspectWindowsProcess(command, config, child, dependencies);
-    if (phase === 'restart') assert.notEqual(provenance.pid, previousPid, 'client restart reused the active Windows PID');
+    if (previousPid !== undefined) assert.notEqual(provenance.pid, previousPid, 'client restart reused the active Windows PID');
     previousPid = provenance.pid;
     evidence.processes.push({
       phase,
@@ -1176,7 +1173,7 @@ export async function runPhysicalE2E(config, options = {}) {
     return provenance;
   };
 
-  const startDrivers = async windowsProvenance => {
+  const startAndroidDriver = async () => {
     const apk = preflightEvidence.android.apk;
     drivers.android = await startDriver(config.android, {
       'appium:udid': config.android.serial,
@@ -1186,186 +1183,170 @@ export async function runPhysicalE2E(config, options = {}) {
       'deep:versionName': apk.versionName,
       'deep:signingSha256': apk.signingSha256
     }, fetchImpl);
-    const handle = `0x${windowsProvenance.handle.toString(16)}`;
+  };
+
+  const startWindowsDriver = async provenance => {
     drivers.windows = await startDriver(config.windows, {
-      'appium:appTopLevelWindow': handle,
-      'deep:processId': windowsProvenance.pid,
+      'appium:appTopLevelWindow': `0x${provenance.handle.toString(16)}`,
+      'deep:processId': provenance.pid,
       'deep:executableSha256': preflightEvidence.windows.exeSha256
     }, fetchImpl);
   };
 
-  const observedRouteService = () => {
-    const route = required(variables.observedRouteNode, 'No observed route is available for the chaos action');
-    const binding = config.chaos?.routeBindings?.find(item => item.routeNode === route);
-    return required(binding?.composeService, 'Observed route has no exact compose-service binding');
-  };
-
-  const stopObservedRoute = async () => {
-    const service = observedRouteService();
-    await command('docker', ['compose', '-p', config.compose.project, '-f', config.compose.file, 'stop', service]);
-    stoppedRouteService = service;
-  };
-
-  const startObservedRoute = async () => {
-    const service = observedRouteService();
-    await command('docker', ['compose', '-p', config.compose.project, '-f', config.compose.file, 'start', service]);
-    const pin = required(config.compose.endpointPins.find(item => item.service === service), 'Observed route service has no endpoint pin');
-    await waitForEndpointPin(
-      pin,
-      fetchImpl,
-      config.chaos.healthTimeoutMs,
-      config.chaos.healthPollMs,
-      dependencies.sleep,
-      dependencies
-    );
-    stoppedRouteService = undefined;
-  };
-
-  const restartClients = async () => {
-    await stopActiveClients();
-    await command('adb', ['-s', config.android.serial, 'shell', 'am', 'start', '-W', '-n', `${config.android.packageName}/${config.android.launchActivity}`]);
-    const restartedWindows = await launchWindows('restart');
-    await startDrivers(restartedWindows);
+  const stopWindowsClient = async () => {
+    if (drivers.windows) await stopDriver(drivers.windows, fetchImpl);
+    drivers.windows = undefined;
+    if (activeWindowsProcess?.pid) await command('taskkill', ['/pid', String(activeWindowsProcess.pid), '/t', '/f']);
+    activeWindowsProcess = undefined;
   };
 
   const stopActiveClients = async () => {
     if (drivers.android) await stopDriver(drivers.android, fetchImpl);
     drivers.android = undefined;
-    if (drivers.windows) await stopDriver(drivers.windows, fetchImpl);
-    drivers.windows = undefined;
+    await stopWindowsClient();
     await command('adb', ['-s', config.android.serial, 'shell', 'am', 'force-stop', config.android.packageName]);
-    if (activeWindowsProcess?.pid) {
-      await command('taskkill', ['/pid', String(activeWindowsProcess.pid), '/t', '/f']);
-      activeWindowsProcess = undefined;
+  };
+
+  const startClients = async phase => {
+    const windows = await launchWindows(phase);
+    await command('adb', ['-s', config.android.serial, 'shell', 'am', 'start', '-W', '-n', `${config.android.packageName}/${config.android.launchActivity}`]);
+    await startAndroidDriver();
+    await startWindowsDriver(windows);
+  };
+
+  const restartClients = async () => {
+    await stopActiveClients();
+    await startClients('restart');
+  };
+
+  const resetWindowsProfile = async () => {
+    await stopWindowsClient();
+    const isolated = preflightEvidence.windows.isolatedAppData;
+    assert.ok(safeUnder(config.windows.appDataRoot, isolated), 'profile reset target escaped AppData root');
+    assert.equal(await fs.readFile(join(isolated, '.deep-e2e-isolated'), 'utf8'), 'physical-e2e isolated appdata\n', 'profile reset sentinel mismatch');
+    await fs.rm(isolated, { recursive: true, force: false });
+    await fs.mkdir(isolated, { recursive: false });
+    await assertCanonicalDirectory(isolated, fs);
+    await fs.writeFile(join(isolated, '.deep-e2e-isolated'), 'physical-e2e isolated appdata\n', 'utf8');
+    const windows = await launchWindows('restore');
+    await startWindowsDriver(windows);
+  };
+
+  const takeServicesOffline = async definition => {
+    assert.equal(activeOfflinePeriod, undefined, 'services are already in an offline period');
+    const purpose = definition?.purpose ?? 'offlineAccountCreateRestore';
+    const periodStarted = now(dependencies);
+    config.compose.services.forEach(service => stoppedServices.add(service));
+    const endpoints = [];
+    activeOfflinePeriod = { purpose, startedMs: periodStarted, endpoints };
+    await command('docker', ['compose', '-p', config.compose.project, '-f', config.compose.file, 'stop', ...config.compose.services]);
+    for (const pin of config.compose.endpointPins) {
+      endpoints.push(await waitForEndpointUnavailable(
+        pin,
+        fetchImpl,
+        config.limits.offlineProbeTimeoutMs,
+        config.limits.offlineProbePollMs,
+        dependencies.sleep,
+        dependencies
+      ));
     }
   };
 
-  try {
-    await command('adb', ['-s', config.android.serial, 'push', config.attachmentPath, androidAttachmentPath]);
-    const initialWindows = await launchWindows('initial');
-    await command('adb', ['-s', config.android.serial, 'shell', 'am', 'start', '-W', '-n', `${config.android.packageName}/${config.android.launchActivity}`]);
-    await startDrivers(initialWindows);
+  const restoreServicesOnline = async definition => {
+    required(activeOfflinePeriod, 'no active offline period can be restored');
+    await command('docker', ['compose', '-p', config.compose.project, '-f', config.compose.file, 'start', ...config.compose.services]);
+    const endpoints = [];
+    for (const pin of config.compose.endpointPins) {
+      endpoints.push(await waitForEndpointPin(
+        pin,
+        fetchImpl,
+        config.limits.offlineProbeTimeoutMs,
+        config.limits.offlineProbePollMs,
+        dependencies.sleep,
+        dependencies
+      ));
+    }
+    stoppedServices.clear();
+    evidence.networkPeriods.push({
+      purpose: activeOfflinePeriod.purpose,
+      offlineElapsedMs: now(dependencies) - activeOfflinePeriod.startedMs,
+      unavailable: activeOfflinePeriod.endpoints,
+      restored: endpoints,
+      restoredBy: definition?.purpose ?? 'runner'
+    });
+    activeOfflinePeriod = undefined;
+  };
 
+  const waitLongOffline = async () => {
+    required(activeOfflinePeriod, 'long-offline wait requires an active offline period');
+    assert.equal(activeOfflinePeriod.purpose, 'longOfflineServicesStop', 'long-offline wait is bound to the wrong outage');
+    const remaining = config.limits.longOfflineMs - (now(dependencies) - activeOfflinePeriod.startedMs);
+    if (remaining > 0) await (dependencies.sleep ?? sleepDefault)(remaining);
+    assert.ok(now(dependencies) - activeOfflinePeriod.startedMs >= config.limits.longOfflineMs, 'long-offline window was not reached');
+  };
+
+  const systemActions = { resetWindowsProfile, restoreServicesOnline, takeServicesOffline, waitLongOffline, restartClients };
+
+  try {
+    await takeServicesOffline({ purpose: 'offlineAccountCreateRestore' });
+    await startClients('initial');
     for (const name of REQUIRED_FLOWS) {
-      if (name === 'coldRestartVerify') {
-        await restartClients();
-      }
-      const flowEvidence = { name, actions: [], files: [], identities: [] };
-      await executeActions(drivers, config.flows[name], variables, flowEvidence, dependencies, {
-        downloadPath,
-        downloadRoot: preflightEvidence.windows.downloadRoot,
-        sourceIdentity: preflightEvidence.attachment.sourceIdentity
-      }, config, { restartClients, stopObservedRoute, startObservedRoute });
-      evidence.flows.push(flowEvidence);
-      evidence.files.push(...flowEvidence.files);
-      if (name === 'mutualIdentity') {
+      const flowEvidence = evidence.flows.find(flow => flow.name === name);
+      flowEvidence.status = 'failed';
+      await executeActions(drivers, config.flows[name], variables, flowEvidence, dependencies, config, systemActions, runDeadline);
+      flowEvidence.status = 'passed';
+      if (name === 'reciprocalContact') {
         assert.ok(variables.actualIdentityWindows && variables.actualIdentityAndroid, 'both actual client identities must be captured');
         assert.notEqual(variables.actualIdentityWindows, variables.actualIdentityAndroid, 'client identities must be distinct');
       }
-      if (name === 'androidToWindowsAttachment') {
-        await fs.unlink(downloadPath);
-        await assertPathAbsent(fs, downloadPath, 'initial decrypted download');
-        evidence.files.push({ phase: 'betweenRestarts', name: markers.attachmentName, deleted: true });
-      }
-    }
-
-    if (config.chaos?.enabled) {
-      const routeEvidence = { name: 'routeChaos', actions: [], files: [], identities: [] };
-      await executeActions(drivers, [config.chaos.routeMarker], variables, routeEvidence, dependencies, {
-        downloadPath,
-        downloadRoot: preflightEvidence.windows.downloadRoot,
-        sourceIdentity: preflightEvidence.attachment.sourceIdentity
-      }, config, { restartClients, stopObservedRoute, startObservedRoute });
-      assert.equal(variables.observedRouteNode, config.chaos.expectedRouteNode, 'route correlation changed before chaos');
-      const binding = config.chaos.routeBindings.find(item => item.routeNode === variables.observedRouteNode);
-      assert.ok(binding, 'captured route node has no compose service binding');
-      const endpointPin = config.compose.endpointPins.find(pin => pin.service === binding.composeService);
-      assert.ok(endpointPin, 'bound compose service has no endpoint pin');
-      const actions = [];
-      for (const action of config.chaos.actions) {
-        assert.equal(interpolate(action.routeRef, variables), variables.observedRouteNode, 'chaos action lost captured route correlation');
-        await command('docker', [
-          'compose',
-          '-p',
-          config.compose.project,
-          '-f',
-          config.compose.file,
-          'restart',
-          binding.composeService
-        ]);
-        const health = await waitForEndpointPin(
-          endpointPin,
-          fetchImpl,
-          config.chaos.healthTimeoutMs,
-          config.chaos.healthPollMs,
-          dependencies.sleep,
-          dependencies
-        );
-        actions.push({
-          type: action.type,
-          service: binding.composeService,
-          routeNodeSha256: sha256(variables.observedRouteNode),
-          health
-        });
-      }
-      evidence.chaos = {
-        executed: true,
-        deterministicFailoverClaim: false,
-        observedRouteNodeSha256: sha256(variables.observedRouteNode),
-        actions
-      };
-    } else {
-      evidence.chaos = { executed: false, deterministicFailoverClaim: false };
     }
     runSucceeded = true;
   } catch (error) {
     mainError = error;
     evidence.failure = { name: error.name, message: 'physical E2E execution failed' };
   } finally {
+    const cleanupDeadline = now(dependencies) + config.limits.cleanupTimeoutMs;
+    commandDeadline = cleanupDeadline;
     evidence.cleanup.attempted = true;
     await cleanupStep(evidence.cleanup, 'android-driver', async () => {
       if (drivers.android) await stopDriver(drivers.android, fetchImpl);
       drivers.android = undefined;
-    });
+    }, cleanupDeadline, dependencies);
     await cleanupStep(evidence.cleanup, 'windows-driver', async () => {
       if (drivers.windows) await stopDriver(drivers.windows, fetchImpl);
       drivers.windows = undefined;
-    });
+    }, cleanupDeadline, dependencies);
     await cleanupStep(evidence.cleanup, 'android-force-stop', async () => {
       await command('adb', ['-s', config.android.serial, 'shell', 'am', 'force-stop', config.android.packageName]);
-    });
+    }, cleanupDeadline, dependencies);
     await cleanupStep(evidence.cleanup, 'windows-process', async () => {
       if (activeWindowsProcess?.pid) await command('taskkill', ['/pid', String(activeWindowsProcess.pid), '/t', '/f']);
       activeWindowsProcess = undefined;
-    });
-    await cleanupStep(evidence.cleanup, 'android-attachment', async () => {
-      await command('adb', ['-s', config.android.serial, 'shell', 'rm', '-f', androidAttachmentPath]);
-    });
-    await cleanupStep(evidence.cleanup, 'observed-route-service', async () => {
-      if (!stoppedRouteService) return;
-      await command('docker', ['compose', '-p', config.compose.project, '-f', config.compose.file, 'start', stoppedRouteService]);
-      const pin = required(config.compose.endpointPins.find(item => item.service === stoppedRouteService), 'stopped route service has no endpoint pin');
-      await waitForEndpointPin(pin, fetchImpl, config.chaos.healthTimeoutMs, config.chaos.healthPollMs, dependencies.sleep, dependencies);
-      stoppedRouteService = undefined;
-    });
-    await cleanupStep(evidence.cleanup, 'windows-downloaded-attachment', async () => {
-      try {
-        await fs.unlink(downloadPath);
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-      }
-      await assertPathAbsent(fs, downloadPath, 'Windows downloaded attachment');
-    });
+    }, cleanupDeadline, dependencies);
+    await cleanupStep(evidence.cleanup, 'compose-services', async () => {
+      if (stoppedServices.size === 0) return;
+      await restoreServicesOnline({ purpose: 'cleanup' });
+    }, cleanupDeadline, dependencies);
     await cleanupStep(evidence.cleanup, 'isolated-appdata', async () => {
-      assert.ok(safeUnder(config.windows.appDataRoot, preflightEvidence.windows.isolatedAppData), 'cleanup target escaped AppData root');
-      await fs.rm(preflightEvidence.windows.isolatedAppData, { recursive: true, force: false });
-      await assertPathAbsent(fs, preflightEvidence.windows.isolatedAppData, 'isolated AppData');
-    });
+      const isolated = preflightEvidence.windows.isolatedAppData;
+      assert.ok(safeUnder(config.windows.appDataRoot, isolated), 'cleanup target escaped AppData root');
+      assert.equal(await fs.readFile(join(isolated, '.deep-e2e-isolated'), 'utf8'), 'physical-e2e isolated appdata\n', 'cleanup sentinel mismatch');
+      await fs.rm(isolated, { recursive: true, force: false });
+      await assertPathAbsent(fs, isolated, 'isolated AppData');
+    }, cleanupDeadline, dependencies);
     if (!evidence.cleanup.succeeded) cleanupError = new Error('physical E2E cleanup did not complete');
-    evidence.status = runSucceeded && evidence.cleanup.succeeded ? 'passed' : 'failed';
+    evidence.status = runSucceeded && evidence.cleanup.succeeded
+      ? (options.testOnly ? 'test-only-passed' : 'passed')
+      : (options.testOnly ? 'test-only-failed' : 'failed');
     evidence.finishedAt = new Date().toISOString();
     try {
-      await artifactWrite(join(artifactsDir, 'physical-deep-e2e.json'), JSON.stringify(evidence, null, 2));
+      validateEvidence(evidence, config.limits.maxEvidenceBytes);
+      await beforeDeadline(
+        () => artifactWrite(join(artifactsDir, 'physical-deep-e2e.json'), JSON.stringify(evidence, null, 2)),
+        cleanupDeadline,
+        'Evidence write',
+        dependencies
+      );
     } catch (error) {
       artifactError = error;
     }

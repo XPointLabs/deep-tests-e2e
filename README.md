@@ -1,65 +1,64 @@
-﻿# Deep E2E Tests
+# Deep E2E Tests
 
-Golden compatibility fixtures and end-to-end smoke tests for Deep.
+Black-box release contracts and bounded physical evidence for the clean-break
+Deep generation.
 
-## Agent Specs
+Read [`AGENTS.md`](AGENTS.md) before changing fixtures or test flows. Tests in
+this repository assert externally visible contracts and must never accept a
+local fake as release evidence.
 
-- Start with [`AGENTS.md`](AGENTS.md) before changing fixtures or test flows.
-- Keep these tests as externally visible contract evidence, not implementation-specific unit tests.
-
-## Local
-
-Run the complete local environment from the workspace root:
+## Local contract checks
 
 ```powershell
-pwsh ./deep-devops/scripts/test-env.ps1
-```
-
-To run the same suite against external storage/file/push endpoints while keeping the local router/registry/staking/contracts stack, export `DEEP_STORAGE_URL`, `DEEP_FILE_URL`, and `DEEP_PUSH_URL`, then invoke:
-
-```powershell
-pwsh ./deep-devops/scripts/test-env.ps1 -BackendMode external
-```
-
-If the test-client must use container-visible backend URLs that differ from the host diagnostics path, also export optional `DEEP_STORAGE_STATS_URL`, `DEEP_FILE_STATS_URL`, and `DEEP_PUSH_STATS_URL` so runtime snapshot gating can still probe `/stats` from the host.
-
-For dedicated backend load evidence, run `npm run e2e:load` against a live `backend-external` profile or use `pwsh ./deep-devops/scripts/test-env.ps1 -Suite full -BackendMode external`; the external full suite now requires `backend-load-smoke.json` with non-zero storage/file/push deltas. For the local dedicated backend services, `-ManagedExternalProfile backend-external` is now the reproducible path and is the same orchestration used by CI.
-
-Run only fixture compatibility checks:
-
-```powershell
-cd ./deep-tests-e2e
+cd C:\Work\DeepSession\XPointLabs\deep-tests-e2e
 npm run fixtures:validate
 npm run compat
 ```
 
-## Physical Android + Windows evidence
+These commands validate the v4 Android↔Windows config/evidence schemas,
+canonical 90-character lowercase `deep1…` identity grammar, strict ordered
+flow coverage, provenance boundaries, bounded evidence and secret/content
+redaction. Injected unit-test adapters are permanently marked
+`releaseEligible: false`.
 
-For a local physical-client rehearsal (not UAT), see
-[`docs/PHYSICAL_DEEP_E2E.md`](docs/PHYSICAL_DEEP_E2E.md). The runner starts
-fail-closed against the pinned Android Wi-Fi device/package and a healthy,
-named local Compose project; it writes a machine-readable evidence artifact
-only after all cross-platform checks complete.
+The useful staking accounting fixture is intentionally separate:
 
-## Fixture Coverage
+```powershell
+npm run staking:compat
+```
 
-- message vectors from Session desktop/Appium automation flows and storage server network-test semantics
-- attachment vectors from Session file server `/file` API semantics
-- reward invariants from Session token contract unit tests and Deep staking projection behavior
-- registration payload fixtures for VLESS metadata and push subscription payloads
+## Physical Android↔Windows evidence
 
-Smoke e2e covers new account fixture creation, offline message storage/retrieval, attachment upload/download, group messaging, push registration/unregister via real MONITOR/UNSUBSCRIBE signatures from a generated ed25519 identity, live storage->push delivery for an active subscription, node registration with VLESS metadata, reward query, router status/RPC, and contracts devnet health. The smoke registry path uses its own node registration identity so transport-profile mutations in the full suite do not leak across tests.
+See [`docs/PHYSICAL_DEEP_E2E.md`](docs/PHYSICAL_DEEP_E2E.md). The physical
+runner covers offline create and phrase restore before any client network
+callback, reciprocal arbitrary Deep ID resolution with `Pending → Verified`,
+1:1 text both ways, closed-group invite/accept/message/remove with removed
+device exclusion, cold restart and bounded long-offline automatic retry.
 
-Full e2e additionally exercises a real signed timestamped private-namespace storage lifecycle via a generated ed25519 identity: storage `/store`, `/retrieve` (`last_hash` and post-delete reads), `/get_expiries`, `/expire_all`, `/expire` (shared and per-message expiry arrays), `/delete`, `/delete_all`, `/revoke_subaccount`, `/revoked_subaccounts`, and `/unrevoke_subaccount`, including the unrevocable retrieve exception for namespaces `-(100n+11)`, plus storage `/sequence`, file upload idempotence, file `/extend` expiry refresh, authenticated avatar upload/update/fetch through `/avatar/{sessionId}`, push resubscribe semantics using a real signed push identity, and atomic registry re-registration while proving the removed public transport mutation/profile endpoints remain unavailable.
+```powershell
+$env:DEEP_ARTIFACT_DIR = 'C:\deep-evidence\physical'
+npm run e2e:physical -- C:\private-local-config\physical-deep-e2e.json
+```
 
-The dedicated load-smoke e2e covers backend-external storage/file/push pressure on the production cutover path: signed storage burst store/retrieve plus explicit idempotent retry proof, concurrent same-content file upload retry/idempotence, concurrent same-id file `/extend` monotonicity, avatar update/fetch stats deltas, push subscribe/resubscribe plus redundant unsubscribe idempotence, and storage-triggered push delivery with `/stats` delta assertions, provider-status inventory capture, and timing summaries written to `backend-load-smoke.json`.
+A physical result can be `passed` only with the built-in process/Docker/ADB/
+WebDriver adapters, real independently built apps, exact service health
+provenance and successful cleanup. Physical execution remains a separate UAT
+gate because it requires those external artifacts and services.
 
-The compatibility contract suite (`npm run compat`) now also exercises storage subaccount authorization against the compat runtime, including read/write/delete/`any_prefix` access checks and write-only `/storage/expire` extend-only behavior.
+`ci:full` cannot pass on contract tests alone. It additionally requires
+`DEEP_PHYSICAL_CONFIG_PATH` and `DEEP_PHYSICAL_EVIDENCE_PATH`, then verifies a
+release-eligible `passed` artifact against that exact v4 config and its service
+build/URL pins. `ci:smoke` remains the bounded local contract lane.
 
-The same compat suite now also exercises storage subaccount revocation lifecycle behavior: `/storage/revoke_subaccount`, `/storage/unrevoke_subaccount`, `/storage/revoked_subaccounts`, 50-token retention, and the unrevocable retrieve exception for namespaces `-(100n+11)`.
+## Quarantined pre-cutover fixtures
 
-`ci:smoke` and `ci:full` now begin with runtime checks that validate health and operational stats endpoints (`/api/nodes/runtime`, `/api/events/stats`, and `/stats` for storage/file/push backends) before compatibility and e2e tests run. The e2e scripts also force `--test-concurrency=1` because the backend integration scenarios intentionally share stateful services.
+The old message, attachment, registration and service smoke/full/load files
+remain in the repository only as pre-cutover reference material. They exercise
+historical Session IDs and storage/file/push semantics and are excluded from
+`fixtures:validate`, `compat` and `ci:smoke`; `ci:full` adds only verified
+physical clean-break evidence.
 
-Storage/file/calls/push dependencies in the devops stack are now provided by standalone product or compatibility service implementations (not mock-only test stubs), keeping the same API contract and test fixtures. The shared harness can also point those same fixtures at external storage/file/push/calls endpoints for cutover rehearsal without changing the tests themselves.
-
-That external-mode cutover path is now also validated against dedicated `storage/file/calls/push` services in `deep-devops`; the service slices are served from standalone runtimes, and the same smoke/full suites still run against them without changing fixtures. `deep-devops/.github/workflows/integration.yml` now includes backend-external smoke, while `deep-devops/.github/workflows/nightly-full-e2e.yml` includes backend-external full with load evidence. Managed external full also emits `backend-restart-smoke.json`, including storage/file/avatar/push subscription, pending call-signal, and persisted push-delivery checks across a real compose restart.
+If an explicit archaeology run is required, the non-release scripts are named
+`legacy:compat`, `legacy:runtime:checks`, `legacy:e2e:smoke`,
+`legacy:e2e:full` and `legacy:e2e:load`. Their success is never clean-break
+release evidence.

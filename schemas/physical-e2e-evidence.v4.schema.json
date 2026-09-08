@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deep.example/schemas/physical-e2e-evidence.v4.schema.json",
+  "title": "Deep physical Android-Windows release-critical evidence v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "contract", "startedAt", "finishedAt", "status", "releaseEligible", "provenance", "correlations", "processes", "networkPeriods", "flows", "cleanup"],
+  "properties": {
+    "schemaVersion": { "const": 4 },
+    "contract": { "const": "deep-physical-release-critical-v1" },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "status": { "enum": ["passed", "failed", "test-only-passed", "test-only-failed"] },
+    "releaseEligible": { "type": "boolean" },
+    "provenance": { "type": "object", "additionalProperties": false, "required": ["mode", "preflight"], "properties": { "mode": { "enum": ["physical", "test-double"] }, "preflight": { "$ref": "#/$defs/preflight" } } },
+    "correlations": { "type": "object", "minProperties": 1, "additionalProperties": { "$ref": "#/$defs/digest" } },
+    "processes": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/process" } },
+    "networkPeriods": { "type": "array", "maxItems": 4, "items": { "$ref": "#/$defs/networkPeriod" } },
+    "flows": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "$ref": "#/$defs/flowEvidence" } },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempted", "succeeded", "steps"],
+      "properties": {
+        "attempted": { "type": "boolean" },
+        "succeeded": { "type": "boolean" },
+        "steps": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "succeeded"],
+            "properties": {
+              "name": { "type": "string", "maxLength": 80 },
+              "succeeded": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "failure": { "type": "object", "additionalProperties": false, "required": ["name", "message"], "properties": { "name": { "type": "string", "maxLength": 80 }, "message": { "const": "physical E2E execution failed" } } }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "pathFingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basename", "pathSha256"],
+      "properties": { "basename": { "type": "string", "minLength": 1, "maxLength": 260 }, "pathSha256": { "$ref": "#/$defs/digest" } }
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["compose", "android", "windows"],
+      "properties": {
+        "compose": { "type": "object", "additionalProperties": false, "required": ["services", "endpoints"], "properties": { "services": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "maxLength": 63 } }, "endpoints": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/endpoint" } } } },
+        "android": { "type": "object", "additionalProperties": false, "required": ["serial", "packageName", "launchActivity", "installed", "apk"], "properties": { "serial": { "const": "192.168.1.45:43337" }, "packageName": { "const": "network.xpoint.deep.e2e" }, "launchActivity": { "const": "network.xpoint.deep.DeepLauncher" }, "installed": { "$ref": "#/$defs/androidVersion" }, "apk": { "$ref": "#/$defs/apk" } } },
+        "windows": { "type": "object", "additionalProperties": false, "required": ["executable", "exeSha256", "bytes", "isolatedAppData"], "properties": { "executable": { "$ref": "#/$defs/pathFingerprint" }, "exeSha256": { "$ref": "#/$defs/digest" }, "bytes": { "type": "integer", "minimum": 1 }, "isolatedAppData": { "$ref": "#/$defs/pathFingerprint" } } }
+      }
+    },
+    "androidVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["versionName", "versionCode", "signingSha256"],
+      "properties": { "versionName": { "type": "string", "minLength": 1, "maxLength": 80 }, "versionCode": { "type": "string", "pattern": "^[0-9]+$" }, "signingSha256": { "$ref": "#/$defs/digest" } }
+    },
+    "apk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packageName", "versionCode", "versionName", "signingSha256", "bytes", "sha256", "path"],
+      "properties": { "packageName": { "const": "network.xpoint.deep.e2e" }, "versionCode": { "type": "string", "pattern": "^[0-9]+$" }, "versionName": { "type": "string", "minLength": 1, "maxLength": 80 }, "signingSha256": { "$ref": "#/$defs/digest" }, "bytes": { "type": "integer", "minimum": 1 }, "sha256": { "$ref": "#/$defs/digest" }, "path": { "$ref": "#/$defs/pathFingerprint" } }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "status", "buildSha256", "urlSha256", "bodySha256", "elapsedMs"],
+      "properties": {
+        "service": { "type": "string", "maxLength": 63 },
+        "status": { "const": 200 },
+        "buildSha256": { "$ref": "#/$defs/digest" },
+        "urlSha256": { "$ref": "#/$defs/digest" },
+        "bodySha256": { "$ref": "#/$defs/digest" },
+        "elapsedMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "unavailableEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "urlSha256", "unavailable", "elapsedMs"],
+      "properties": {
+        "service": { "type": "string", "maxLength": 63 },
+        "urlSha256": { "$ref": "#/$defs/digest" },
+        "unavailable": { "const": true },
+        "elapsedMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "pid", "executablePathSha256", "handleSha256", "elapsedMs"],
+      "properties": {
+        "phase": { "enum": ["initial", "restore", "restart"] },
+        "pid": { "type": "integer", "minimum": 1 },
+        "executablePathSha256": { "$ref": "#/$defs/digest" },
+        "handleSha256": { "$ref": "#/$defs/digest" },
+        "elapsedMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "networkPeriod": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose", "offlineElapsedMs", "unavailable", "restored", "restoredBy"],
+      "properties": {
+        "purpose": { "type": "string", "maxLength": 80 },
+        "offlineElapsedMs": { "type": "integer", "minimum": 0 },
+        "unavailable": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/unavailableEndpoint" } },
+        "restored": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/endpoint" } },
+        "restoredBy": { "type": "string", "maxLength": 80 }
+      }
+    },
+    "actionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "target", "purpose", "elapsedMs"],
+      "properties": {
+        "type": { "type": "string", "maxLength": 40 },
+        "target": { "enum": ["android", "windows", "system"] },
+        "purpose": { "type": "string", "maxLength": 80 },
+        "elapsedMs": { "type": "integer", "minimum": 0 },
+        "selectorSha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "flowEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "actions", "identityProofs"],
+      "properties": {
+        "name": { "enum": ["offlineAccountCreate", "offlineAccountRestore", "reciprocalContact", "windowsToAndroidText", "androidToWindowsText", "smallClosedGroup", "coldRestartVerify", "longOfflineRetry"] },
+        "status": { "enum": ["passed", "failed", "not-run"] },
+        "actions": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/actionEvidence" } },
+        "identityProofs": { "type": "array", "maxItems": 4, "items": { "type": "object", "additionalProperties": false, "required": ["target", "deepIdSha256"], "properties": { "target": { "enum": ["android", "windows"] }, "deepIdSha256": { "$ref": "#/$defs/digest" } } } }
+      }
+    }
+  }
+}

@@ -3,21 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Deep golden compatibility fixtures and end-to-end smoke tests.",
+  "description": "Deep clean-break physical release contracts and isolated staking fixtures.",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "runtime:checks": "node scripts/runtime-checks.mjs",
     "fixtures:validate": "node scripts/validate-fixtures.mjs",
-    "compat": "node --test --test-reporter=spec test/compat/*.test.mjs",
-    "test": "npm run compat",
-    "e2e:smoke": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.smoke.test.mjs",
-    "e2e:load": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.load.test.mjs",
-    "e2e:full": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.smoke.test.mjs test/e2e/*.full.test.mjs test/e2e/*.load.test.mjs",
+    "compat": "node --test --test-reporter=spec test/compat/physical-e2e.test.mjs",
+    "staking:compat": "node --test --test-reporter=spec test/staking/*.test.mjs",
+    "test": "npm run fixtures:validate && npm run compat",
     "e2e:physical": "node scripts/run-physical-e2e.mjs",
-    "ci:smoke": "npm run runtime:checks && npm run fixtures:validate && npm run compat && npm run e2e:smoke",
-    "ci:full": "npm run runtime:checks && npm run fixtures:validate && npm run compat && npm run e2e:full"
+    "physical:evidence:verify": "node scripts/verify-physical-evidence.mjs",
+    "ci:smoke": "npm run fixtures:validate && npm run compat",
+    "ci:full": "npm run fixtures:validate && npm run compat && npm run physical:evidence:verify",
+    "legacy:runtime:checks": "node scripts/runtime-checks.mjs",
+    "legacy:compat": "node --test --test-reporter=spec test/compat/golden-fixtures.test.mjs",
+    "legacy:e2e:smoke": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.smoke.test.mjs",
+    "legacy:e2e:load": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.load.test.mjs",
+    "legacy:e2e:full": "node --test --test-concurrency=1 --test-reporter=spec test/e2e/*.smoke.test.mjs test/e2e/*.full.test.mjs test/e2e/*.load.test.mjs"
   }
 }
 

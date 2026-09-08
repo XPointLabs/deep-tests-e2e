@@ -1,28 +1,31 @@
 import assert from 'node:assert/strict';
-import {
-  attachmentVectors,
-  manifest,
-  messageVectors,
-  registrationPayloads,
-  rewardInvariants
-} from '../src/fixtures.mjs';
+import physicalConfig from '../fixtures/physical-e2e.example.json' with { type: 'json' };
+import rewardInvariants from '../fixtures/golden/reward-invariants.json' with { type: 'json' };
+import configSchema from '../schemas/physical-e2e-config.v4.schema.json' with { type: 'json' };
+import evidenceSchema from '../schemas/physical-e2e-evidence.v4.schema.json' with { type: 'json' };
+import { CONFIG_VERSION, EVIDENCE_SCHEMA_VERSION, REQUIRED_FLOWS, validateConfig } from '../src/physical-e2e.mjs';
 
-assert.equal(manifest.schemaVersion, 1);
-assert.ok(manifest.sources.length >= 10);
-assert.ok(manifest.sources.every(source => /^[0-9a-f]{7,40}$/i.test(source.commit)));
+assert.doesNotThrow(() => validateConfig(physicalConfig));
+assert.equal(configSchema.$schema, 'https://json-schema.org/draft/2020-12/schema');
+assert.equal(configSchema.properties.version.const, CONFIG_VERSION);
+assert.equal(configSchema.additionalProperties, false);
+assert.deepEqual(configSchema.properties.flows.required, [...REQUIRED_FLOWS]);
+assert.equal(evidenceSchema.$schema, 'https://json-schema.org/draft/2020-12/schema');
+assert.equal(evidenceSchema.properties.schemaVersion.const, EVIDENCE_SCHEMA_VERSION);
+assert.equal(evidenceSchema.properties.flows.minItems, REQUIRED_FLOWS.length);
+assert.equal(evidenceSchema.properties.flows.maxItems, REQUIRED_FLOWS.length);
 
-assert.equal(messageVectors.kind, 'message-vectors');
-assert.ok(messageVectors.vectors.length >= 2);
-
-assert.equal(attachmentVectors.kind, 'attachment-vectors');
-assert.ok(attachmentVectors.vectors.length >= 1);
+const releaseFixtureText = JSON.stringify({ physicalConfig, configSchema, evidenceSchema });
+for (const legacy of ['Settings.SessionId', 'NewConversation.SessionId', '^05[', '/storage/', '/file']) {
+  assert.equal(releaseFixtureText.includes(legacy), false, `release fixture contains retired semantics: ${legacy}`);
+}
 
 assert.equal(rewardInvariants.kind, 'reward-invariants');
 assert.equal(rewardInvariants.token.symbol, 'XPNT');
-
-assert.equal(registrationPayloads.kind, 'registration-payload-fixtures');
-assert.ok(registrationPayloads.accounts.alice.sessionId.startsWith('05'));
-assert.equal(registrationPayloads.nodeRegistration.transport.protocol, 'vless');
+assert.equal(
+  rewardInvariants.expectedRewards.lifetimeRewardsAtomic - rewardInvariants.expectedRewards.claimedRewardsAtomic,
+  rewardInvariants.expectedRewards.claimableRewardsAtomic
+);
 
 console.log('fixture validation passed');
 
