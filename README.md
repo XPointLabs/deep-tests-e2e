@@ -42,13 +42,13 @@ npm run e2e:physical -- C:\private-local-config\physical-deep-e2e.json
 
 A physical result can be `passed` only with the built-in process/Docker/ADB/
 WebDriver adapters, real independently built apps, exact service health
-provenance and successful cleanup. Physical execution remains a separate UAT
-gate because it requires those external artifacts and services.
+provenance and successful cleanup. Physical execution and
+`physical:evidence:verify` are local UAT gates because they require those
+external artifacts, devices and services; GitHub CI never runs either command.
 
-`ci:full` cannot pass on contract tests alone. It additionally requires
-`DEEP_PHYSICAL_CONFIG_PATH` and `DEEP_PHYSICAL_EVIDENCE_PATH`, then verifies a
-release-eligible `passed` artifact against that exact v4 config and its service
-build/URL pins. `ci:smoke` remains the bounded local contract lane.
+`ci:full` runs the complete portable contract and staking compatibility suite.
+`ci:smoke` remains the bounded portable contract lane. Neither command creates
+or substitutes physical release evidence.
 
 ## Quarantined pre-cutover fixtures
 
