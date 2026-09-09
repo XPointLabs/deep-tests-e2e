@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile as execFileCallback, spawn as spawnProcess } from 'node:child_process';
 import { access, lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
@@ -122,6 +122,10 @@ function pathFingerprint(path) {
 function safeUnder(root, candidate) {
   const rel = relative(resolve(root), resolve(candidate));
   return rel.length > 0 && !rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel);
+}
+
+function isPortableAbsolute(path) {
+  return isAbsolute(path) || win32.isAbsolute(path);
 }
 
 function now(dependencies = {}) {
@@ -296,7 +300,7 @@ export function validateConfig(config) {
 
   const compose = required(config.compose, 'compose configuration is required');
   exactKeys(compose, ['file', 'project', 'services', 'endpointPins'], 'compose');
-  assert.ok(typeof compose.file === 'string' && isAbsolute(compose.file), 'compose.file must be an absolute path');
+  assert.ok(typeof compose.file === 'string' && isPortableAbsolute(compose.file), 'compose.file must be an absolute path');
   assert.match(compose.project, /^[a-z0-9][a-z0-9_-]{2,62}$/, 'compose.project must be a safe local project name');
   assert.ok(Array.isArray(compose.services) && compose.services.length >= 1 && compose.services.length <= 16, 'compose.services must contain 1-16 services');
   assert.equal(new Set(compose.services).size, compose.services.length, 'compose.services must be unique');
@@ -321,7 +325,7 @@ export function validateConfig(config) {
   assert.equal(android.serial, ANDROID_SERIAL, `android.serial must pin ${ANDROID_SERIAL}`);
   assert.equal(android.packageName, ANDROID_PACKAGE, `android.packageName must pin ${ANDROID_PACKAGE}`);
   assert.equal(android.launchActivity, ANDROID_LAUNCH_ACTIVITY, `android.launchActivity must pin ${ANDROID_LAUNCH_ACTIVITY}`);
-  assert.ok(typeof android.apkPath === 'string' && isAbsolute(android.apkPath), 'android.apkPath must be absolute');
+  assert.ok(typeof android.apkPath === 'string' && isPortableAbsolute(android.apkPath), 'android.apkPath must be absolute');
   assert.equal(android.identityPattern, DEEP_ID_PATTERN, 'android.identityPattern must enforce one canonical permanent Deep ID');
   exactKeys(android.driver, ['url', 'capabilities'], 'android.driver');
   exactKeys(android.driver.capabilities, ['alwaysMatch'], 'android.driver.capabilities');
@@ -332,9 +336,9 @@ export function validateConfig(config) {
 
   const windows = required(config.windows, 'windows configuration is required');
   exactKeys(windows, ['exePath', 'processName', 'appDataRoot', 'launchTimeoutMs', 'launchPollMs', 'identityPattern', 'driver'], 'windows');
-  assert.ok(typeof windows.exePath === 'string' && isAbsolute(windows.exePath), 'windows.exePath must be absolute');
+  assert.ok(typeof windows.exePath === 'string' && isPortableAbsolute(windows.exePath), 'windows.exePath must be absolute');
   assert.match(windows.processName, /^[A-Za-z0-9_.-]+\.exe$/, 'windows.processName must be a bounded executable name');
-  assert.ok(typeof windows.appDataRoot === 'string' && isAbsolute(windows.appDataRoot), 'windows.appDataRoot must be absolute');
+  assert.ok(typeof windows.appDataRoot === 'string' && isPortableAbsolute(windows.appDataRoot), 'windows.appDataRoot must be absolute');
   assert.match(basename(windows.appDataRoot), /e2e/i, 'windows.appDataRoot must be a dedicated E2E root');
   assert.ok(Number.isInteger(windows.launchTimeoutMs) && windows.launchTimeoutMs >= 1_000 && windows.launchTimeoutMs <= 60_000, 'windows.launchTimeoutMs must be 1000-60000');
   assert.ok(Number.isInteger(windows.launchPollMs) && windows.launchPollMs >= 50 && windows.launchPollMs <= 1_000, 'windows.launchPollMs must be 50-1000');
