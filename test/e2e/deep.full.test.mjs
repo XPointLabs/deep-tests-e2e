@@ -390,7 +390,8 @@ test('Deep full e2e compatibility extensions', async () => {
     { hash: second.hash, expiry: targetedExpiry + 7_000 },
     { hash: first.hash, expiry: targetedExpiry + 3_000 }
   ];
-  const expectedMultiExpire = [...multiExpireTargets].sort((left, right) => left.hash.localeCompare(right.hash));
+  const expectedMultiExpire = [...multiExpireTargets].sort((left, right) =>
+    left.hash < right.hash ? -1 : left.hash > right.hash ? 1 : 0);
   const expiredSelectedMulti = await postJson(urls.storage, '/storage/expire', createSignedStorageExpirePayload(storageSigningIdentity, {
     pubkey,
     messages: multiExpireTargets.map(item => item.hash),

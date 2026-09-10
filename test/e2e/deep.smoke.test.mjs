@@ -245,7 +245,7 @@ test('Deep smoke e2e', async () => {
   writeArtifact('reward-query.json', { node, rewards });
 
   const routerStatus = await getJson(urls.router, '/status');
-  assert.equal(routerStatus.router.state, 'privacy-routing-disabled');
+  assert.equal(routerStatus.router.state, 'privacy-routing-unavailable');
   assert.equal(routerStatus.router.privacyRouting, false);
   const disabledRpcResponse = await fetch(new URL('/api/session/rpc', urls.router), {
     method: 'POST',
